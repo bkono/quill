@@ -1,11 +1,12 @@
 import ArgumentParser
+import Darwin
 import Foundation
 
 /// Manage quill's LaunchAgent so the daemon starts at login.
 ///
 /// We deliberately do NOT use SMAppService.mainApp here — that requires a full
-/// .app bundle. Since quill ships as a single binary in /usr/local/bin, a
-/// plain LaunchAgent plist is the simpler, more honest mechanism.
+/// .app bundle. Since quill ships as a single CLI binary, a plain LaunchAgent
+/// plist is the simpler, more honest mechanism.
 struct Install: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Install or remove the launch-at-login LaunchAgent."
@@ -95,24 +96,52 @@ struct Install: ParsableCommand {
     }
 
     private func resolveBinaryPath() throws -> String {
-        // /usr/local/bin/quill is the canonical install path. Honor a real
-        // location if running from elsewhere (e.g. dev).
-        let candidate = "/usr/local/bin/quill"
-        if FileManager.default.isExecutableFile(atPath: candidate) {
-            return candidate
+        if let path = Self.currentExecutablePath() {
+            return path
         }
-        // Fall back to the running executable's resolved path.
-        let argv0 = CommandLine.arguments.first ?? "quill"
-        if argv0.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: argv0) {
-            FileHandle.standardError.write(Data(
-                "note: /usr/local/bin/quill not found; using \(argv0)\n".utf8
-            ))
-            return argv0
+        if let path = Self.findExecutableOnPath(named: "quill") {
+            return path
         }
         FileHandle.standardError.write(Data(
-            "couldn't locate the quill binary. install it to /usr/local/bin/quill first.\n".utf8
+            "couldn't locate the quill binary. ensure quill is installed and on your PATH.\n".utf8
         ))
         throw ExitCode(1)
+    }
+
+    /// Resolved path of the running quill binary.
+    private static func currentExecutablePath() -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        var size = UInt32(buffer.count)
+        guard _NSGetExecutablePath(&buffer, &size) == 0 else { return nil }
+
+        var resolved = [CChar](repeating: 0, count: Int(PATH_MAX))
+        let path: String
+        if realpath(buffer, &resolved) != nil {
+            path = cString(resolved)
+        } else {
+            path = cString(buffer)
+        }
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
+
+    private static func cString(_ buffer: [CChar]) -> String {
+        let bytes = buffer.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// Walk `$PATH` for an executable named `quill`.
+    private static func findExecutableOnPath(named name: String) -> String? {
+        let pathEnv = ProcessInfo.processInfo.environment["PATH"]
+            ?? "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        for dir in pathEnv.split(separator: ":", omittingEmptySubsequences: true) {
+            let candidate = URL(fileURLWithPath: String(dir))
+                .appendingPathComponent(name)
+                .resolvingSymlinksInPath()
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                return candidate.path
+            }
+        }
+        return nil
     }
 
     private func uid() -> uid_t { getuid() }
