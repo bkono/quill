@@ -5,25 +5,36 @@ import AppKit
 /// or take keyboard focus away from the meeting application.
 @MainActor
 final class MeetingPromptController: NSObject {
+    private struct Presentation {
+        let eyebrow: String
+        let title: String
+        let body: String
+        let actionTitle: String
+        let actionHelp: String
+        let symbolName: String
+        let accentColor: NSColor
+    }
+
     private var panel: NSPanel?
     private var dismissTimer: Timer?
-    private var currentSessionID: UInt64?
-    private var onStart: ((UInt64) -> Void)?
+    private var currentPrompt: MeetingPrompt?
+    private var onAction: ((UInt64, MeetingPromptAction) -> Void)?
     private var onDismiss: ((UInt64) -> Void)?
 
     @discardableResult
     func show(
         prompt: MeetingPrompt,
-        onStart: @escaping (UInt64) -> Void,
+        onAction: @escaping (UInt64, MeetingPromptAction) -> Void,
         onDismiss: @escaping (UInt64) -> Void
     ) -> Bool {
         close()
 
         guard let screen = Self.presentationScreen() else { return false }
 
-        let width: CGFloat = 360
-        let height: CGFloat = 72
-        let margin: CGFloat = 16
+        let presentation = Self.presentation(for: prompt)
+        let width: CGFloat = 460
+        let height: CGFloat = 136
+        let margin: CGFloat = 20
         let visibleFrame = screen.visibleFrame
         let frame = NSRect(
             x: visibleFrame.maxX - width - margin,
@@ -57,60 +68,114 @@ final class MeetingPromptController: NSObject {
         content.blendingMode = .behindWindow
         content.state = .active
         content.wantsLayer = true
-        content.layer?.cornerRadius = 12
+        content.layer?.cornerRadius = 16
+        content.layer?.cornerCurve = .continuous
         content.layer?.masksToBounds = true
         content.layer?.borderWidth = 1
-        content.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        content.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
+
+        let accentRail = NSView(frame: NSRect(x: 0, y: 0, width: 5, height: height))
+        accentRail.wantsLayer = true
+        accentRail.layer?.backgroundColor = presentation.accentColor.cgColor
+        content.addSubview(accentRail)
+
+        let iconBackground = NSView(frame: NSRect(x: 20, y: 66, width: 48, height: 48))
+        iconBackground.wantsLayer = true
+        iconBackground.layer?.backgroundColor = presentation.accentColor
+            .withAlphaComponent(0.18)
+            .cgColor
+        iconBackground.layer?.cornerRadius = 14
+        iconBackground.layer?.cornerCurve = .continuous
+        content.addSubview(iconBackground)
+
+        let icon = NSImageView(frame: NSRect(x: 11, y: 11, width: 26, height: 26))
+        icon.image = NSImage(
+            systemSymbolName: presentation.symbolName,
+            accessibilityDescription: presentation.eyebrow
+        ) ?? NSImage(systemSymbolName: "waveform", accessibilityDescription: presentation.eyebrow)
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
+        icon.contentTintColor = presentation.accentColor
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        iconBackground.addSubview(icon)
+
+        let eyebrow = NSTextField(labelWithString: presentation.eyebrow)
+        eyebrow.font = .systemFont(ofSize: 10, weight: .bold)
+        eyebrow.textColor = presentation.accentColor
+        eyebrow.frame = NSRect(x: 84, y: 109, width: 320, height: 14)
+        content.addSubview(eyebrow)
+
+        let title = NSTextField(labelWithString: presentation.title)
+        title.font = .systemFont(ofSize: 16, weight: .semibold)
+        title.textColor = .white
+        title.lineBreakMode = .byTruncatingTail
+        title.frame = NSRect(x: 84, y: 82, width: 328, height: 22)
+        content.addSubview(title)
+
+        let body = NSTextField(labelWithString: presentation.body)
+        body.font = .systemFont(ofSize: 13, weight: .regular)
+        body.textColor = NSColor.white.withAlphaComponent(0.72)
+        body.lineBreakMode = .byTruncatingTail
+        body.frame = NSRect(x: 84, y: 59, width: 348, height: 19)
+        content.addSubview(body)
+
+        let actionButton = BannerButton(
+            title: presentation.actionTitle,
+            style: .primary(presentation.accentColor),
+            target: self,
+            action: #selector(actionClicked)
+        )
+        actionButton.frame = NSRect(x: 84, y: 14, width: 156, height: 36)
+        actionButton.toolTip = presentation.actionHelp
+        actionButton.setAccessibilityHelp(presentation.actionHelp)
+        content.addSubview(actionButton)
+
+        let notNowButton = BannerButton(
+            title: "Not now",
+            style: .secondary,
+            target: self,
+            action: #selector(dismissClicked)
+        )
+        notNowButton.frame = NSRect(x: 248, y: 14, width: 88, height: 36)
+        notNowButton.toolTip = "Dismiss this prompt"
+        notNowButton.setAccessibilityHelp("Dismiss this prompt without changing recording state")
+        content.addSubview(notNowButton)
 
         let dismissButton = NSButton(
             title: "×",
             target: self,
             action: #selector(dismissClicked)
         )
-        dismissButton.frame = NSRect(x: 10, y: 40, width: 22, height: 22)
+        dismissButton.frame = NSRect(x: width - 42, y: height - 42, width: 30, height: 30)
         dismissButton.isBordered = false
+        dismissButton.refusesFirstResponder = true
         dismissButton.focusRingType = .none
-        dismissButton.font = .systemFont(ofSize: 15, weight: .medium)
-        dismissButton.contentTintColor = NSColor.white.withAlphaComponent(0.7)
-        dismissButton.toolTip = "Dismiss for this call"
+        dismissButton.font = .systemFont(ofSize: 18, weight: .medium)
+        dismissButton.contentTintColor = NSColor.white.withAlphaComponent(0.68)
+        dismissButton.toolTip = "Dismiss this prompt"
+        dismissButton.setAccessibilityLabel("Dismiss meeting prompt")
         content.addSubview(dismissButton)
 
-        let title = NSTextField(labelWithString: "\(prompt.candidate.displayName) call detected")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        title.textColor = .white
-        title.lineBreakMode = .byTruncatingTail
-        title.frame = NSRect(x: 42, y: 39, width: 176, height: 19)
-        content.addSubview(title)
-
-        let body = NSTextField(labelWithString: "Start recording with quill?")
-        body.font = .systemFont(ofSize: 11)
-        body.textColor = NSColor.white.withAlphaComponent(0.62)
-        body.frame = NSRect(x: 42, y: 19, width: 176, height: 17)
-        content.addSubview(body)
-
-        let startButton = NSButton(
-            title: "Start Recording",
-            target: self,
-            action: #selector(startClicked)
-        )
-        startButton.frame = NSRect(x: width - 132, y: 20, width: 118, height: 32)
-        startButton.isBordered = false
-        startButton.focusRingType = .none
-        startButton.font = .systemFont(ofSize: 12, weight: .semibold)
-        startButton.contentTintColor = .white
-        startButton.wantsLayer = true
-        startButton.layer?.backgroundColor = NSColor.systemBlue.cgColor
-        startButton.layer?.cornerRadius = 7
-        content.addSubview(startButton)
-
         panel.contentView = content
-        panel.orderFrontRegardless()
+        panel.setAccessibilityLabel(presentation.title)
 
         self.panel = panel
-        currentSessionID = prompt.sessionID
-        self.onStart = onStart
+        currentPrompt = prompt
+        self.onAction = onAction
         self.onDismiss = onDismiss
-        dismissTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) {
+
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            panel.orderFrontRegardless()
+        } else {
+            panel.alphaValue = 0
+            panel.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().alphaValue = 1
+            }
+        }
+
+        dismissTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: false) {
             [weak self] _ in
             MainActor.assumeIsolated { self?.dismissCurrent() }
         }
@@ -118,22 +183,22 @@ final class MeetingPromptController: NSObject {
     }
 
     /// Close without changing the media session's suppression state. Used when
-    /// recording begins elsewhere, the candidate ends, or Quill shuts down.
+    /// recording state changes, evidence returns, or Quill shuts down.
     func close() {
         dismissTimer?.invalidate()
         dismissTimer = nil
         panel?.close()
         panel = nil
-        currentSessionID = nil
-        onStart = nil
+        currentPrompt = nil
+        onAction = nil
         onDismiss = nil
     }
 
-    @objc private func startClicked() {
-        guard let sessionID = currentSessionID else { return }
-        let action = onStart
+    @objc private func actionClicked() {
+        guard let prompt = currentPrompt else { return }
+        let action = onAction
         close()
-        action?(sessionID)
+        action?(prompt.token, prompt.action)
     }
 
     @objc private func dismissClicked() {
@@ -141,10 +206,35 @@ final class MeetingPromptController: NSObject {
     }
 
     private func dismissCurrent() {
-        guard let sessionID = currentSessionID else { return }
+        guard let prompt = currentPrompt else { return }
         let action = onDismiss
         close()
-        action?(sessionID)
+        action?(prompt.token)
+    }
+
+    private static func presentation(for prompt: MeetingPrompt) -> Presentation {
+        switch prompt.action {
+        case .startRecording:
+            Presentation(
+                eyebrow: "MEETING DETECTED",
+                title: "\(prompt.candidate.displayName) call detected",
+                body: "Record microphone and system audio as separate tracks.",
+                actionTitle: "Start Recording",
+                actionHelp: "Start a new Quill recording",
+                symbolName: "record.circle",
+                accentColor: .systemBlue
+            )
+        case .stopRecording:
+            Presentation(
+                eyebrow: "RECORDING STILL ACTIVE",
+                title: "\(prompt.candidate.displayName) call may have ended",
+                body: "Stop recording and begin transcription?",
+                actionTitle: "Stop Recording",
+                actionHelp: "Stop the current Quill recording",
+                symbolName: "stop.circle.fill",
+                accentColor: .systemRed
+            )
+        }
     }
 
     private static func presentationScreen() -> NSScreen? {
@@ -152,5 +242,89 @@ final class MeetingPromptController: NSObject {
         return NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
             ?? NSScreen.main
             ?? NSScreen.screens.first
+    }
+}
+
+@MainActor
+private final class BannerButton: NSButton {
+    enum Style {
+        case primary(NSColor)
+        case secondary
+    }
+
+    private let style: Style
+    private var trackingAreaReference: NSTrackingArea?
+    private var isPointerInside = false
+
+    init(
+        title: String,
+        style: Style,
+        target: AnyObject?,
+        action: Selector?
+    ) {
+        self.style = style
+        super.init(frame: .zero)
+        self.title = title
+        self.target = target
+        self.action = action
+        isBordered = false
+        refusesFirstResponder = true
+        focusRingType = .none
+        font = .systemFont(ofSize: 13, weight: .semibold)
+        contentTintColor = .white
+        wantsLayer = true
+        layer?.cornerRadius = 9
+        layer?.cornerCurve = .continuous
+        updateBackground()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingAreaReference {
+            removeTrackingArea(trackingAreaReference)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self
+        )
+        addTrackingArea(area)
+        trackingAreaReference = area
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isPointerInside = true
+        updateBackground()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isPointerInside = false
+        updateBackground()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        updateBackground(isPressed: true)
+        super.mouseDown(with: event)
+        updateBackground()
+    }
+
+    private func updateBackground(isPressed: Bool = false) {
+        let color: NSColor
+        switch style {
+        case .primary(let accent):
+            color = accent.withAlphaComponent(isPressed ? 0.72 : isPointerInside ? 0.88 : 1)
+        case .secondary:
+            color = NSColor.white.withAlphaComponent(isPressed ? 0.18 : isPointerInside ? 0.13 : 0.08)
+        }
+        layer?.backgroundColor = color.cgColor
     }
 }

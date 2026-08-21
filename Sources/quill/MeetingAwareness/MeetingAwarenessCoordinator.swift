@@ -6,6 +6,7 @@ import Foundation
 final class MeetingAwarenessCoordinator {
     var isRecordingProvider: (@MainActor () -> Bool)?
     var onStartRecording: (@MainActor () -> Void)?
+    var onStopRecording: (@MainActor () -> Void)?
 
     private let monitor = CoreAudioProcessMonitor()
     private let stateMachine = MeetingPromptStateMachine()
@@ -82,34 +83,39 @@ final class MeetingAwarenessCoordinator {
         case .show(let prompt):
             let didShow = promptController.show(
                 prompt: prompt,
-                onStart: { [weak self] sessionID in
-                    self?.startRequested(sessionID: sessionID)
+                onAction: { [weak self] token, action in
+                    self?.actionRequested(token: token, action: action)
                 },
-                onDismiss: { [weak self] sessionID in
-                    self?.dismissed(sessionID: sessionID)
+                onDismiss: { [weak self] token in
+                    self?.dismissed(token: token)
                 }
             )
             if didShow {
-                log("prompt shown for \(prompt.candidate.key) session=\(prompt.sessionID)")
+                log("\(prompt.action.logName) prompt shown for \(prompt.candidate.key) token=\(prompt.token)")
             } else {
-                stateMachine.dismiss(sessionID: prompt.sessionID)
+                stateMachine.dismiss(token: prompt.token)
                 warn("no screen available for meeting prompt")
             }
         }
     }
 
-    private func startRequested(sessionID: UInt64) {
-        guard stateMachine.accept(sessionID: sessionID) else {
-            warn("ignored stale Start action for session \(sessionID)")
+    private func actionRequested(token: UInt64, action: MeetingPromptAction) {
+        guard stateMachine.accept(token: token, action: action) else {
+            warn("ignored stale \(action.logName) action for token \(token)")
             return
         }
-        log("prompt accepted session=\(sessionID)")
-        onStartRecording?()
+        log("\(action.logName) prompt accepted token=\(token)")
+        switch action {
+        case .startRecording:
+            onStartRecording?()
+        case .stopRecording:
+            onStopRecording?()
+        }
     }
 
-    private func dismissed(sessionID: UInt64) {
-        guard stateMachine.dismiss(sessionID: sessionID) else { return }
-        log("prompt dismissed session=\(sessionID)")
+    private func dismissed(token: UInt64) {
+        guard stateMachine.dismiss(token: token) else { return }
+        log("prompt dismissed token=\(token)")
     }
 
     private func log(_ message: String) {
@@ -118,5 +124,14 @@ final class MeetingAwarenessCoordinator {
 
     private func warn(_ message: String) {
         FileHandle.standardError.write(Data("meeting awareness: warning: \(message)\n".utf8))
+    }
+}
+
+private extension MeetingPromptAction {
+    var logName: String {
+        switch self {
+        case .startRecording: "start"
+        case .stopRecording: "stop"
+        }
     }
 }

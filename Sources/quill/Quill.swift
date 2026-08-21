@@ -83,6 +83,12 @@ final class AppController {
         case meetingPrompt = "meeting-prompt"
     }
 
+    private enum RecordingStopTrigger: String {
+        case menu
+        case meetingPrompt = "meeting-prompt"
+        case shutdown
+    }
+
     private let root: URL
     private let menuBar = MenuBarController()
     private let transcription = TranscriptionCoordinator()
@@ -101,6 +107,9 @@ final class AppController {
         meetingAwareness.onStartRecording = { [weak self] in
             self?.startIfIdle(trigger: .meetingPrompt)
         }
+        meetingAwareness.onStopRecording = { [weak self] in
+            self?.stopIfRecording(trigger: .meetingPrompt)
+        }
         if Config.meetingAwarenessEnabled() {
             meetingAwareness.start()
         }
@@ -118,7 +127,7 @@ final class AppController {
     /// Stop any live session cleanly (finalizing files) and exit.
     func shutdown() {
         meetingAwareness.stop()
-        stopSession()
+        stopIfRecording(trigger: .shutdown)
         NSApp.terminate(nil)
     }
 
@@ -126,7 +135,7 @@ final class AppController {
         if session == nil {
             startIfIdle(trigger: .menu)
         } else {
-            stopSession()
+            stopIfRecording(trigger: .menu)
         }
     }
 
@@ -155,12 +164,14 @@ final class AppController {
         }
     }
 
-    private func stopSession() {
+    /// Stop-only boundary used by the menu, shutdown, and the token-guarded
+    /// meeting-ended prompt. Repeated or stale actions are harmless.
+    private func stopIfRecording(trigger: RecordingStopTrigger) {
         guard let session else { return }
         session.stop()
         let elapsed = Self.format(Date().timeIntervalSince(session.startedAt))
         FileHandle.standardError.write(Data(
-            "○ stopped · \(elapsed) · \(session.dir.path)\n".utf8
+            "○ stopped source=\(trigger.rawValue) · \(elapsed) · \(session.dir.path)\n".utf8
         ))
         self.session = nil
         meetingAwareness.recordingStateChanged()

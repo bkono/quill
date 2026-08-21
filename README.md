@@ -36,7 +36,9 @@ When Zoom, Slack, Teams, Webex, or a supported browser starts using the
 microphone, quill shows a short-lived **Start Recording** prompt. Detection
 reads Core Audio process state only — it does not open the microphone or record
 anything until you accept. Browser calls are labeled by browser in this first
-version; quill does not inspect tab URLs or window contents.
+version; quill does not inspect tab URLs or window contents. If meeting evidence
+remains absent for twenty seconds while quill is recording, it offers to stop
+and begin transcription. Quill never stops a recording automatically.
 
 Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 
