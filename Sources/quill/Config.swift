@@ -6,6 +6,7 @@ import Foundation
 ///       "recordings_dir": "~/Recordings",
 ///       "transcription": { "enabled": true, "engine": "parakeet" },
 ///       "mic_voice_processing": true,
+///       "meeting_awareness": { "enabled": true },
 ///       "on_stop": "my-hook"
 ///     }
 ///
@@ -44,8 +45,18 @@ enum Config {
         transcription()?["engine"] as? String ?? "parakeet"
     }
 
+    /// Whether Core Audio process activity should produce an actionable meeting
+    /// prompt. Detection reads metadata only and never starts capture. Default on.
+    static func meetingAwarenessEnabled() -> Bool {
+        meetingAwareness()?["enabled"] as? Bool ?? true
+    }
+
     private static func transcription() -> [String: Any]? {
         load()?["transcription"] as? [String: Any]
+    }
+
+    private static func meetingAwareness() -> [String: Any]? {
+        load()?["meeting_awareness"] as? [String: Any]
     }
 
     /// Apple voice processing (acoustic echo cancellation) on the mic, so

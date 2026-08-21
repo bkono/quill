@@ -32,6 +32,12 @@ transcription speed.
    automatically (the menu shows progress); a notification fires when the
    transcript is ready.
 
+When Zoom, Slack, Teams, Webex, or a supported browser starts using the
+microphone, quill shows a short-lived **Start Recording** prompt. Detection
+reads Core Audio process state only — it does not open the microphone or record
+anything until you accept. Browser calls are labeled by browser in this first
+version; quill does not inspect tab URLs or window contents.
+
 Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 
 | File | Contents |
@@ -76,6 +82,7 @@ Optional, at `~/.config/quill/config.json`:
 {
   "recordings_dir": "~/Recordings",
   "transcription": { "enabled": true, "engine": "parakeet" },
+  "meeting_awareness": { "enabled": true },
   "on_stop": "my-hook"
 }
 ```
@@ -89,6 +96,9 @@ Optional, at `~/.config/quill/config.json`:
   the voice unit is live, macOS ducks other playback slightly (`.min` ducking
   is configured, but it can't be zeroed). On headphones there's no echo to
   cancel, so raw capture is the better default.
+- `meeting_awareness.enabled` — show an actionable prompt when a supported
+  meeting application begins using the microphone (default on). Detection does
+  not require capture permission and never starts recording automatically.
 - `on_stop` — shell command spawned with the session directory as its
   argument, **after the transcript is written** (or right after recording if
   transcription is disabled). Wire it to whatever comes next: summarization,

@@ -78,9 +78,15 @@ struct Doctor: ParsableCommand {
 /// ticker. All state transitions happen on the main actor.
 @MainActor
 final class AppController {
+    private enum RecordingTrigger: String {
+        case menu
+        case meetingPrompt = "meeting-prompt"
+    }
+
     private let root: URL
     private let menuBar = MenuBarController()
     private let transcription = TranscriptionCoordinator()
+    private let meetingAwareness = MeetingAwarenessCoordinator()
     private var session: RecordingSession?
     private var ticker: Timer?
 
@@ -90,6 +96,14 @@ final class AppController {
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
         menuBar.update(recording: false, elapsed: nil)
+
+        meetingAwareness.isRecordingProvider = { [weak self] in self?.session != nil }
+        meetingAwareness.onStartRecording = { [weak self] in
+            self?.startIfIdle(trigger: .meetingPrompt)
+        }
+        if Config.meetingAwarenessEnabled() {
+            meetingAwareness.start()
+        }
 
         Task { [transcription, root] in
             await transcription.setStatusHandler { status in
@@ -103,30 +117,38 @@ final class AppController {
 
     /// Stop any live session cleanly (finalizing files) and exit.
     func shutdown() {
+        meetingAwareness.stop()
         stopSession()
         NSApp.terminate(nil)
     }
 
     private func toggle() {
         if session == nil {
-            startSession()
+            startIfIdle(trigger: .menu)
         } else {
             stopSession()
         }
     }
 
-    private func startSession() {
+    /// Start-only boundary used by both the menu and actionable meeting prompt.
+    /// Unlike toggle(), repeated or stale prompt actions can never stop a live
+    /// session.
+    private func startIfIdle(trigger: RecordingTrigger) {
+        guard session == nil else { return }
         do {
             let newSession = try RecordingSession(root: root)
             try newSession.start()
             session = newSession
-            FileHandle.standardError.write(Data("● recording → \(newSession.dir.path)\n".utf8))
+            FileHandle.standardError.write(Data(
+                "● recording source=\(trigger.rawValue) → \(newSession.dir.path)\n".utf8
+            ))
         } catch {
             FileHandle.standardError.write(Data("recording start failed: \(error)\n".utf8))
             notifyUser(title: "quill — recording failed", body: "\(error)")
             return
         }
 
+        meetingAwareness.recordingStateChanged()
         menuBar.update(recording: true, elapsed: "0:00")
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -141,6 +163,7 @@ final class AppController {
             "○ stopped · \(elapsed) · \(session.dir.path)\n".utf8
         ))
         self.session = nil
+        meetingAwareness.recordingStateChanged()
         ticker?.invalidate()
         ticker = nil
         menuBar.update(recording: false, elapsed: nil)
