@@ -64,15 +64,21 @@ final class MeetingPromptController: NSObject {
         ]
 
         let content = NSVisualEffectView(frame: NSRect(origin: .zero, size: frame.size))
-        content.material = .hudWindow
-        content.blendingMode = .behindWindow
+        // Do not derive the banner's contrast from whatever happens to be
+        // behind it. The popover material and adaptive base color give the
+        // semantic label colors a predictable light/dark-mode surface.
+        content.material = .popover
+        content.blendingMode = .withinWindow
         content.state = .active
         content.wantsLayer = true
+        content.layer?.backgroundColor = NSColor.windowBackgroundColor
+            .withAlphaComponent(0.94)
+            .cgColor
         content.layer?.cornerRadius = 16
         content.layer?.cornerCurve = .continuous
         content.layer?.masksToBounds = true
         content.layer?.borderWidth = 1
-        content.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        content.layer?.borderColor = NSColor.separatorColor.cgColor
 
         let accentRail = NSView(frame: NSRect(x: 0, y: 0, width: 5, height: height))
         accentRail.wantsLayer = true
@@ -106,14 +112,14 @@ final class MeetingPromptController: NSObject {
 
         let title = NSTextField(labelWithString: presentation.title)
         title.font = .systemFont(ofSize: 16, weight: .semibold)
-        title.textColor = .white
+        title.textColor = .labelColor
         title.lineBreakMode = .byTruncatingTail
         title.frame = NSRect(x: 84, y: 82, width: 328, height: 22)
         content.addSubview(title)
 
         let body = NSTextField(labelWithString: presentation.body)
         body.font = .systemFont(ofSize: 13, weight: .regular)
-        body.textColor = NSColor.white.withAlphaComponent(0.72)
+        body.textColor = .secondaryLabelColor
         body.lineBreakMode = .byTruncatingTail
         body.frame = NSRect(x: 84, y: 59, width: 348, height: 19)
         content.addSubview(body)
@@ -150,7 +156,7 @@ final class MeetingPromptController: NSObject {
         dismissButton.refusesFirstResponder = true
         dismissButton.focusRingType = .none
         dismissButton.font = .systemFont(ofSize: 18, weight: .medium)
-        dismissButton.contentTintColor = NSColor.white.withAlphaComponent(0.68)
+        dismissButton.contentTintColor = .secondaryLabelColor
         dismissButton.toolTip = "Dismiss this prompt"
         dismissButton.setAccessibilityLabel("Dismiss meeting prompt")
         content.addSubview(dismissButton)
@@ -271,7 +277,12 @@ private final class BannerButton: NSButton {
         refusesFirstResponder = true
         focusRingType = .none
         font = .systemFont(ofSize: 13, weight: .semibold)
-        contentTintColor = .white
+        switch style {
+        case .primary:
+            contentTintColor = .white
+        case .secondary:
+            contentTintColor = .labelColor
+        }
         wantsLayer = true
         layer?.cornerRadius = 9
         layer?.cornerCurve = .continuous
@@ -321,9 +332,14 @@ private final class BannerButton: NSButton {
         let color: NSColor
         switch style {
         case .primary(let accent):
-            color = accent.withAlphaComponent(isPressed ? 0.72 : isPointerInside ? 0.88 : 1)
+            // System red and blue are too bright for small white type in some
+            // appearances. A darker solid fill keeps the action readable.
+            let base = accent.blended(withFraction: 0.18, of: .black) ?? accent
+            color = base.withAlphaComponent(isPressed ? 0.78 : isPointerInside ? 0.9 : 1)
         case .secondary:
-            color = NSColor.white.withAlphaComponent(isPressed ? 0.18 : isPointerInside ? 0.13 : 0.08)
+            color = NSColor.labelColor.withAlphaComponent(
+                isPressed ? 0.18 : isPointerInside ? 0.13 : 0.08
+            )
         }
         layer?.backgroundColor = color.cgColor
     }
