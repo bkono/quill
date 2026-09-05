@@ -63,33 +63,17 @@ final class MeetingPromptController: NSObject {
             .ignoresCycle,
         ]
 
-        let content = NSVisualEffectView(frame: NSRect(origin: .zero, size: frame.size))
         // Do not derive the banner's contrast from whatever happens to be
         // behind it. The popover material and adaptive base color give the
         // semantic label colors a predictable light/dark-mode surface.
-        content.material = .popover
-        content.blendingMode = .withinWindow
-        content.state = .active
-        content.wantsLayer = true
-        content.layer?.backgroundColor = NSColor.windowBackgroundColor
-            .withAlphaComponent(0.94)
-            .cgColor
-        content.layer?.cornerRadius = 16
-        content.layer?.cornerCurve = .continuous
-        content.layer?.masksToBounds = true
-        content.layer?.borderWidth = 1
-        content.layer?.borderColor = NSColor.separatorColor.cgColor
+        let content = MeetingPromptSurfaceView(frame: NSRect(origin: .zero, size: frame.size))
 
-        let accentRail = NSView(frame: NSRect(x: 0, y: 0, width: 5, height: height))
-        accentRail.wantsLayer = true
-        accentRail.layer?.backgroundColor = presentation.accentColor.cgColor
+        let accentRail = AdaptiveFillView(frame: NSRect(x: 0, y: 0, width: 5, height: height))
+        accentRail.fillColor = presentation.accentColor
         content.addSubview(accentRail)
 
-        let iconBackground = NSView(frame: NSRect(x: 20, y: 66, width: 48, height: 48))
-        iconBackground.wantsLayer = true
-        iconBackground.layer?.backgroundColor = presentation.accentColor
-            .withAlphaComponent(0.18)
-            .cgColor
+        let iconBackground = AdaptiveFillView(frame: NSRect(x: 20, y: 66, width: 48, height: 48))
+        iconBackground.fillColor = presentation.accentColor.withAlphaComponent(0.18)
         iconBackground.layer?.cornerRadius = 14
         iconBackground.layer?.cornerCurve = .continuous
         content.addSubview(iconBackground)
@@ -106,7 +90,7 @@ final class MeetingPromptController: NSObject {
 
         let eyebrow = NSTextField(labelWithString: presentation.eyebrow)
         eyebrow.font = .systemFont(ofSize: 10, weight: .bold)
-        eyebrow.textColor = presentation.accentColor
+        eyebrow.textColor = Self.eyebrowTextColor(accent: presentation.accentColor)
         eyebrow.frame = NSRect(x: 84, y: 109, width: 320, height: 14)
         content.addSubview(eyebrow)
 
@@ -243,6 +227,21 @@ final class MeetingPromptController: NSObject {
         }
     }
 
+    /// 10-pt `systemBlue`/`systemRed` fail contrast on a light window
+    /// background. Darken the accent in light appearance only; keep the
+    /// recognizable hue in dark mode. Decorative chrome still uses the raw
+    /// accent.
+    private static func eyebrowTextColor(accent: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let resolved = accent.resolvedColor(with: appearance)
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            if isDark {
+                return resolved
+            }
+            return resolved.blended(withFraction: 0.38, of: .black) ?? resolved
+        }
+    }
+
     private static func presentationScreen() -> NSScreen? {
         let mouse = NSEvent.mouseLocation
         return NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
@@ -328,19 +327,108 @@ private final class BannerButton: NSButton {
         updateBackground()
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateBackground()
+    }
+
+    override func updateLayer() {
+        super.updateLayer()
+        updateBackground()
+    }
+
     private func updateBackground(isPressed: Bool = false) {
-        let color: NSColor
-        switch style {
-        case .primary(let accent):
-            // System red and blue are too bright for small white type in some
-            // appearances. A darker solid fill keeps the action readable.
-            let base = accent.blended(withFraction: 0.18, of: .black) ?? accent
-            color = base.withAlphaComponent(isPressed ? 0.78 : isPointerInside ? 0.9 : 1)
-        case .secondary:
-            color = NSColor.labelColor.withAlphaComponent(
-                isPressed ? 0.18 : isPointerInside ? 0.13 : 0.08
-            )
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let color: NSColor
+            switch style {
+            case .primary(let accent):
+                // System red and blue are too bright for small white type in some
+                // appearances. A darker solid fill keeps the action readable.
+                let base = accent.blended(withFraction: 0.18, of: .black) ?? accent
+                color = base.withAlphaComponent(isPressed ? 0.78 : isPointerInside ? 0.9 : 1)
+            case .secondary:
+                color = NSColor.labelColor.withAlphaComponent(
+                    isPressed ? 0.18 : isPointerInside ? 0.13 : 0.08
+                )
+            }
+            layer?.backgroundColor = color.cgColor
         }
-        layer?.backgroundColor = color.cgColor
+    }
+}
+
+/// Popover surface whose layer fill and border re-resolve when the effective
+/// appearance changes. Snapshotting `NSColor.cgColor` at build time would
+/// otherwise freeze a light or dark fill while semantic text colors update.
+@MainActor
+private final class MeetingPromptSurfaceView: NSVisualEffectView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        material = .popover
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 16
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+        layer?.borderWidth = 1
+        applyLayerColors()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors()
+    }
+
+    override func updateLayer() {
+        super.updateLayer()
+        applyLayerColors()
+    }
+
+    private func applyLayerColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.windowBackgroundColor
+                .withAlphaComponent(0.94)
+                .cgColor
+            layer?.borderColor = NSColor.separatorColor.cgColor
+        }
+    }
+}
+
+/// Solid fill that re-resolves its `NSColor` against the current appearance
+/// instead of keeping a one-shot `CGColor` snapshot.
+@MainActor
+private final class AdaptiveFillView: NSView {
+    var fillColor: NSColor? {
+        didSet { applyLayerColors() }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyLayerColors()
+    }
+
+    override func updateLayer() {
+        super.updateLayer()
+        applyLayerColors()
+    }
+
+    private func applyLayerColors() {
+        guard let fillColor else { return }
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = fillColor.cgColor
+        }
     }
 }
