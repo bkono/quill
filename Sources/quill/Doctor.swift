@@ -102,12 +102,12 @@ enum DoctorReport {
             }
         } catch {
             return Check(name: "transcription", status: .warn("\(error)"),
-                remediation: "run quill models or quill import-muesli; recording remains available")
+                remediation: "open Models & Notes to choose a cached model or check Muesli again; recording remains available")
         }
         return Check(
             name: "transcription",
-            status: .warn("parakeet models not downloaded (~600 MB)"),
-            remediation: "default setup downloads on first transcription; use quill import-muesli to reuse an existing model"
+            status: .warn("selected Parakeet model is not available locally"),
+            remediation: "open Models & Notes to reuse a cached model; Quill never downloads models automatically"
         )
     }
 

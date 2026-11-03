@@ -6,38 +6,68 @@ move, copy, delete, repair, or download imported model assets.
 
 ## On the work laptop
 
-Build this branch using the normal installation instructions, then run:
+Build and install this fork using the normal instructions, then launch Quill.
+On first launch, if Muesli or MuesliDev has a configuration, **Models & Notes**
+opens with an offer showing the exact speech and local Ollama models. Choose
+**Use this setup**. Existing model/note selections are previewed as replacements;
+other configuration keys are kept and the old file is backed up.
+
+Choose **Keep my setup**, dismiss the window, or leave an invalid offer: the
+attempt and its outcome are remembered. Normal later launches do not repeat it.
+If neither Muesli configuration exists on first discovery, that result is also
+remembered. Open **Models & Notes… → Check Muesli again…** whenever you want to
+retry, including after installing Muesli later. The window also lets you choose a
+custom config file or MuesliDev when both installations exist. Discovery and
+validation do not block recording and never start a large default download.
+
+**Models & Notes** shows:
+
+- The saved transcription model/backend, a cached-model picker, and the model
+  currently running when it differs during a settings change.
+- Quill's own configuration path and import provenance. Import makes a snapshot
+  of settings; Quill does not follow Muesli's future configuration changes.
+- Exact model and tokenizer paths, shared FluidAudio/Hugging Face versus custom
+  cache location, missing-file status, and **Show in Finder**.
+- Saved and running note models, local Ollama address, installed-model lookup,
+  and controls to enable/disable or change notes without restarting Quill.
+
+Shared cache location is not an ownership claim: Muesli and other apps can use
+these files. Removing **Muesli.app alone** does not delete those caches. An
+uninstaller or cleanup that deletes the referenced model/tokenizer folders will
+break that selection. Keep or restore the files, choose another cached model,
+or re-import after repairing the source setup. **Retry pending transcripts**
+resumes recordings that have no transcript yet. Existing transcripts are kept.
+Ollama owns its separate model storage; keep the local service and selected model
+available for notes. Quill never downloads or moves any of these assets silently.
+
+Quit Muesli and disable its launch-at-login setting when ready to switch, to
+avoid duplicate recording prompts or competing dictation hotkeys. Leave shared
+caches intact. Quill and Parrot still need their own macOS permissions. Record a
+short synthetic meeting to verify actual Core ML loading and audio permissions;
+file checks alone cannot prove those.
+
+Parrot's companion PR offers to import Muesli's **dictation** selection in its
+native app onboarding/Settings. Quill imports the **meeting** selection and owns
+meeting-note generation. Capture and completion behavior stay independent of
+Muesli.
+
+### Optional command-line diagnostics and re-import
+
+No command is required for initial app onboarding. For scripting or troubleshooting:
 
 ```sh
-quill models                 # list compatible caches and missing files
-quill import-muesli          # preview the selected meeting model + Ollama settings
-quill import-muesli --write  # save to ~/.config/quill/config.json
-quill doctor                # selected cache + Ollama reachability/model preflight
+quill models
+quill doctor
+quill import-muesli                 # preview
+quill import-muesli --replace --write # explicit re-import with backup
 ```
 
-If Quill already has a `transcription` or `summaries` section, preview with
-`quill import-muesli --replace` and apply with `--replace --write`. Replacement
-changes model/summary selections only; it preserves your recording directory,
-hooks, microphone processing, meeting awareness, and transcription enabled flag.
-Every existing config receives a separate backup before a write. Malformed
-configs fail instead of being overwritten. Restart a running Quill afterward.
-
-Import reads `~/Library/Application Support/Muesli/config.json`. For MuesliDev or
-a custom installation, pass `--config '/path/to/config.json'`. Only meeting-model
-and Ollama fields are imported; provider credentials and unrelated Muesli settings
-are never copied. The command needs Muesli's explicit meeting model selection.
-If it is absent, select a meeting model in Muesli first.
-
-Quit Muesli and disable its launch-at-login setting when ready to switch, so it
-will not also offer to record or intercept dictation shortcuts. Leave its model
-caches intact. Quill and Parrot still need their own macOS microphone,
-accessibility (Parrot), and system-audio (Quill) permissions. Record a short
-synthetic meeting before relying on the installation. This validates actual Core
-ML loading and audio permissions, which file checks alone cannot prove.
-
-Parrot's companion PR imports Muesli's **dictation** selection. Quill imports the
-**meeting** selection and owns meeting-note generation. Their recording and
-completion behavior remains independent of Muesli.
+Use `--config '/path/to/config.json'` for a custom Muesli installation. Only model
+and local Ollama fields are copied; provider credentials are excluded. CLI writes
+record the same provenance and accepted decision as the app. A preview does not
+consume the first-run offer. Existing `transcription.enabled: false` is preserved;
+use the app's **Transcribe finished recordings** toggle when ready to enable it.
+Malformed Quill config is reported and left untouched, including symlinked files.
 
 ## Supported assets
 
@@ -59,8 +89,8 @@ silent fallback. Muesli's other experimental speech backends are not supported.
 
 An explicit `model_directory` always uses strict local loading. Missing weights,
 partial downloads, invalid Muesli completion manifests, or load failures do not
-trigger cache repair or network downloads. The original unconfigured Quill
-Parakeet v2 default retains its existing first-use download behavior.
+trigger cache repair or network downloads. The unconfigured Parakeet v2 default also requires a local cache; recording
+remains available when no model is ready.
 
 To select a compatible cache manually:
 
@@ -88,7 +118,9 @@ loopback HTTP(S) origin; remote servers, redirects, and cloud models are rejecte
 ## Meeting notes and retries
 
 Summaries are off by default and imported only when Muesli's selected summary
-provider is Ollama. An unavailable Ollama server or invalid summary config never
+provider is local Ollama. Invalid or remote summary settings produce an import
+warning and preserve Quill's current note settings while valid speech settings
+can still be imported. An unavailable Ollama server or invalid summary config never
 blocks recording. Transcription writes `transcript.json` and `transcript.md`
 first and fires the existing `on_stop` hook as before. An independent serial
 queue then writes `summary.md`; failures go to `summary.log` and a notification.

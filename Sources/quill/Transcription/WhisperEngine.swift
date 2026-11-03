@@ -18,7 +18,7 @@ actor WhisperEngine: TranscriptionEngine {
             case .notPrepared: return "WhisperKit engine used before prepare()"
             case .unreadableAudio(let url): return "unreadable or empty audio \(url.lastPathComponent)"
             case .missingTokenizer(let model):
-                return "cached tokenizer missing for \(model); load this model once in Muesli before using it in quill"
+                return "cached tokenizer missing for \(model); restore its tokenizer files or choose another cached model in Models & Notes"
             case .invalidTokenizer(let token): return "cached Whisper tokenizer is missing required token \(token)"
             }
         }

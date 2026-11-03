@@ -68,7 +68,7 @@ struct SpeechModel: Sendable {
                 let attrs = try? fm.attributesOfItem(atPath: url.path)
                 guard attrs?[.type] as? FileAttributeType == .typeRegular,
                       (attrs?[.size] as? NSNumber)?.int64Value ?? 0 > 0 else {
-                    throw SetupError("Missing or empty model file: \(url.path). Finish the download in Muesli; Quill will not repair or redownload it.")
+                    throw SetupError("Missing or empty model file: \(url.path). Restore these files or select another cached model in Models & Notes; Quill has not downloaded anything.")
                 }
             }
         }

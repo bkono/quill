@@ -63,10 +63,8 @@ written is still readable.
 
 Built in, on-device, automatic. The default engine is **Parakeet TDT 0.6B v2**
 (English) via [FluidAudio](https://github.com/FluidInference/FluidAudio)'s
-Core ML port — roughly 20 seconds per hour of audio on Apple Silicon. Models
-(~600 MB) download once on first transcription; `quill doctor` tells you
-whether they're already cached so you're never downloading after an important
-meeting.
+Core ML port — roughly 20 seconds per hour of audio on Apple Silicon. Models load from existing local caches. Quill never starts a model download
+automatically; the menu bar shows the saved model and missing-file status.
 
 Each track is transcribed separately, shifted by its start offset so both
 share one clock, and merged by timestamp. Jobs run in a serial queue — you can
@@ -75,8 +73,15 @@ on next launch (the filesystem is the queue: a session with `meta.json` but no
 `transcript.json` is pending). Failures append to the session's
 `transcribe.log` and never block later jobs.
 
-Already using Muesli? Run `quill models`, then `quill import-muesli` to preview
-reusing its selected meeting model and local Ollama setup. Add `--write` to apply.
+Already using Muesli? On first launch, Quill discovers its setup and offers to
+reuse your selected meeting model and local Ollama settings. Accept in the window
+to get started. Your choice is remembered; ordinary launches do not ask again.
+
+Open **Models & Notes…** from the menu bar to choose a cached model, inspect
+model/tokenizer paths, configure notes, recover missing assets, or check Muesli
+again. It shows Quill’s own configuration separately from shared caches and any
+job currently using a different model. The CLI import remains available for
+explicit re-import and diagnostics.
 Quill supports existing Parakeet v2/v3, Redux, Unified, and WhisperKit caches
 without moving or downloading them. See [the migration guide](docs/muesli-migration.md)
 for compatibility, existing-config handling, and work-laptop setup.
