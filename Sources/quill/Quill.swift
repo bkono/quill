@@ -35,9 +35,11 @@ struct Run: AsyncParsableCommand {
         // startup are informational, not fatal.
         let checks = DoctorReport.run(recordingsRoot: root)
         if !DoctorReport.allOK(checks) {
-            FileHandle.standardError.write(Data("startup checks failed:\n".utf8))
+            FileHandle.standardError.write(Data("recording checks need attention:\n".utf8))
             DoctorReport.print(checks)
-            throw ExitCode(1)
+            // Keep setup/inspection available even before capture permissions
+            // or the recordings directory are ready. Starting capture reports
+            // its own error; no audio is opened by the settings window.
         }
 
         let app = NSApplication.shared
@@ -105,39 +107,23 @@ final class AppController {
 
     private let root: URL
     private let menuBar = MenuBarController()
-    private let transcription: TranscriptionCoordinator
+    private let transcription = TranscriptionCoordinator()
+    private var summaryIdentity: String?
+    private var didResumeTranscripts = false
+    private var activeSummaryJobs: [UUID: String] = [:]
     private let meetingAwareness = MeetingAwarenessCoordinator()
     private var session: RecordingSession?
     private var ticker: Timer?
 
     init(root: URL) {
         self.root = root
-        let summaries: SummaryCoordinator?
-        do {
-            summaries = try Config.summarySettings().map { SummaryCoordinator(settings: $0) }
-        } catch {
-            summaries = nil
-            FileHandle.standardError.write(Data("summaries disabled: \(error)\n".utf8))
-            notifyUser(title: "quill — summary configuration error", body: "Recording remains available. Run quill doctor.")
-        }
-        transcription = TranscriptionCoordinator(summaries: summaries)
-        if let summaries {
-            Task {
-                await summaries.setStatusHandler { status in
-                    switch status {
-                    case .idle: notifyUser(title: "quill — meeting notes ready", body: "summary.md is saved beside your transcript.")
-                    case .failed(let session):
-                        notifyUser(title: "quill — summary failed", body: "\(session): transcript saved; see summary.log or retry quill summarize.")
-                    case .summarizing: break
-                    }
-                }
-                do { try await summaries.resumePending(root: root) }
-                catch { FileHandle.standardError.write(Data("cannot resume summaries: \(error)\n".utf8)) }
-            }
-        }
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
+        menuBar.onModels = { [weak self] in self?.modelSettings.present() }
+        menuBar.onWillOpen = { [weak self] in
+            Task { await self?.modelSettings.model.refresh(resetDraft: false) }
+        }
         menuBar.update(recording: false, elapsed: nil)
 
         meetingAwareness.isRecordingProvider = { [weak self] in self?.session != nil }
@@ -151,13 +137,82 @@ final class AppController {
             meetingAwareness.start()
         }
 
-        Task { [transcription, root] in
+        Task { [transcription] in
             await transcription.setStatusHandler { status in
                 Task { @MainActor [weak self] in
                     self?.showTranscription(status)
                 }
             }
+            await configureSummaries(resume: true)
+            let offered = await modelSettings.model.discover(automatic: true)
+            if offered { modelSettings.present() }
+            else { await resumeInitialTranscripts() }
+        }
+    }
+
+    private lazy var modelSettings = makeModelSettings()
+
+    private func makeModelSettings() -> ModelSettingsWindowController {
+        let controller = ModelSettingsWindowController(model: ModelSettingsViewModel(store: ModelSetupStore()))
+        controller.model.onSnapshot = { [weak self] snapshot in
+            self?.menuBar.updateModels(snapshot)
+        }
+        controller.model.onChanged = { [weak self] in
+            guard let self else { return }
+            await configureSummaries(resume: false)
+            await resumeInitialTranscripts()
+        }
+        controller.model.onRetryTranscripts = { [weak self] in
+            guard let self else { return }
             await transcription.resumePending(root: root)
+        }
+        return controller
+    }
+
+    private func resumeInitialTranscripts() async {
+        guard !didResumeTranscripts else { return }
+        didResumeTranscripts = true
+        await transcription.resumePending(root: root)
+    }
+
+    private func configureSummaries(resume: Bool) async {
+        do {
+            let settings = try Config.summarySettings()
+            let identity = settings.map { "\($0.baseURL.absoluteString)|\($0.model)" }
+            guard resume || identity != summaryIdentity else { return }
+            summaryIdentity = identity
+            guard let settings else {
+                await transcription.updateSummaries(nil)
+                return
+            }
+            let summaries = SummaryCoordinator(settings: settings)
+            let generation = UUID()
+            await summaries.setStatusHandler { [weak self] status in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    switch status {
+                    case .idle:
+                        activeSummaryJobs[generation] = nil
+                        notifyUser(title: "quill — meeting notes ready", body: "summary.md is saved beside your transcript.")
+                    case .failed(let session):
+                        activeSummaryJobs[generation] = nil
+                        notifyUser(title: "quill — summary failed", body: "\(session): transcript saved; see summary.log.")
+                    case .summarizing(let session):
+                        activeSummaryJobs[generation] = "\(settings.model) · \(session)"
+                    }
+                    modelSettings.model.activeSummary = activeSummaryJobs.isEmpty ? nil
+                        : activeSummaryJobs.values.sorted().joined(separator: "; ")
+                }
+            }
+            await transcription.updateSummaries(summaries)
+            // Only startup resumes marked work. Reconfiguring must not duplicate
+            // jobs still owned by the previous summary coordinator.
+            if resume { try await summaries.resumePending(root: root) }
+        } catch {
+            summaryIdentity = nil
+            await transcription.updateSummaries(nil)
+            modelSettings.model.actionError = "Meeting notes are unavailable: \(error)"
+            FileHandle.standardError.write(Data("summaries unavailable: \(error)\n".utf8))
         }
     }
 
@@ -224,12 +279,16 @@ final class AppController {
         switch status {
         case .idle:
             menuBar.updateTranscription(nil)
-        case .transcribing(let name, let queued):
+            modelSettings.model.activeTranscription = nil
+        case .transcribing(let name, let model, let queued):
+            modelSettings.model.activeTranscription = "\(model) · \(name)"
             menuBar.updateTranscription(
                 queued > 0 ? "transcribing \(name) · \(queued) queued" : "transcribing \(name)"
             )
         case .failed(let name):
-            menuBar.updateTranscription("transcription failed · \(name)")
+            menuBar.updateTranscription("transcription failed · \(name) — open Models & Notes")
+            modelSettings.model.activeTranscription = nil
+            Task { await modelSettings.model.refresh(resetDraft: false) }
         }
     }
 
