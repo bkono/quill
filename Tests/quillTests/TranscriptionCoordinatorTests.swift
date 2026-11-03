@@ -97,6 +97,35 @@ struct TranscriptionCoordinatorTests {
         #expect(!FileManager.default.fileExists(atPath: second.appendingPathComponent("summary.log").path))
     }
 
+    @Test func disablingTranscriptionFinishesCurrentJobAndDefersBacklogWithoutHooks() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try session(root, "01", tracks: ["mic", "system"])
+        let second = try session(root, "02", tracks: ["mic"])
+        let gate = TranscriptionGate()
+        let engine = FixtureEngine(model: "same", gate: gate)
+        let selection = SelectionBox(model: "same")
+        let controls = RuntimeControls()
+        let queue = TranscriptionCoordinator(modelProvider: { selection.current() }, engineFactory: { _ in engine },
+            enabled: { controls.isEnabled }, hookCommand: { controls.recordHook(); return nil }, notify: { _, _ in })
+        await queue.enqueue(first)
+        await gate.waitUntilEntered()
+        await queue.enqueue(second)
+        controls.isEnabled = false
+        await gate.open()
+        await queue.waitUntilIdle()
+        #expect(try transcriptModel(first) == "same")
+        #expect(!FileManager.default.fileExists(atPath: second.appendingPathComponent("transcript.json").path))
+        #expect(await engine.calls == ["01/mic.caf", "01/system.caf"])
+        #expect(controls.hooks == 1)
+        controls.isEnabled = true
+        await queue.resumePending(root: root)
+        await queue.waitUntilIdle()
+        #expect(try transcriptModel(second) == "same")
+        #expect(await engine.calls == ["01/mic.caf", "01/system.caf", "02/mic.caf"])
+        #expect(controls.hooks == 2)
+    }
+
     @Test func missingParakeetCacheFailsWithoutCreatingOrDownloadingAssets() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -195,4 +224,16 @@ private actor TranscriptionGate {
         continuation?.resume()
         continuation = nil
     }
+}
+
+private final class RuntimeControls: @unchecked Sendable {
+    private let lock = NSLock()
+    private var enabled = true
+    private var hookCount = 0
+    var isEnabled: Bool {
+        get { lock.withLock { enabled } }
+        set { lock.withLock { enabled = newValue } }
+    }
+    var hooks: Int { lock.withLock { hookCount } }
+    func recordHook() { lock.withLock { hookCount += 1 } }
 }

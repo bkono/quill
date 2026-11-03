@@ -116,6 +116,12 @@ actor TranscriptionCoordinator {
 
     private func drain() async {
         while !queue.isEmpty {
+            // A toggle never interrupts the job already running. Leave later
+            // sessions pending on disk, without firing their completion hooks.
+            guard enabled() else {
+                queue.removeAll()
+                break
+            }
             let dir = queue.removeFirst()
             activeSession = dir
             let jobSummaries = summaries
