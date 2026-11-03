@@ -39,12 +39,6 @@ enum Config {
         transcription()?["enabled"] as? Bool ?? true
     }
 
-    /// Configured engine name. Only "parakeet" ships today; the coordinator
-    /// warns and falls back for anything else.
-    static func transcriptionEngine() -> String {
-        transcription()?["engine"] as? String ?? "parakeet"
-    }
-
     static func speechModel() throws -> SpeechModel {
         try SpeechModel.parse(transcription() ?? [:])
     }
