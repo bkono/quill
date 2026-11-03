@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreML
 import FluidAudio
 import Foundation
 
@@ -22,13 +23,30 @@ actor ParakeetEngine: TranscriptionEngine {
     }
 
     nonisolated let name = "parakeet"
-    nonisolated let model = "parakeet-tdt-0.6b-v2-coreml"
+    nonisolated let model: String
+    private let selection: SpeechModel
+
+    init(selection: SpeechModel) {
+        self.selection = selection
+        self.model = selection.model == "redux" ? "parakeet-redux-coreml"
+            : "parakeet-tdt-0.6b-\(selection.model)-coreml"
+    }
 
     private var manager: AsrManager?
 
     func prepare() async throws {
         guard manager == nil else { return }
-        let models = try await AsrModels.downloadAndLoad(version: .v2)
+        let models: AsrModels
+        if let folder = selection.directory {
+            try selection.validateCache()
+            models = try AsrModels.loadLocal(
+                from: folder, version: selection.parakeetVersion,
+                encoderComputeUnits: selection.model == "redux" ? .cpuOnly : nil
+            )
+        } else {
+            // Preserve the original first-run download only for unconfigured users.
+            models = try await AsrModels.downloadAndLoad(version: selection.parakeetVersion)
+        }
         let manager = AsrManager()
         try await manager.loadModels(models)
         self.manager = manager
@@ -71,7 +89,7 @@ actor ParakeetEngine: TranscriptionEngine {
     /// Group word timings into readable segments: break on sentence-ending
     /// punctuation (parakeet v2 emits punctuation), a silence gap, or a hard
     /// length cap so a run-on speaker still wraps.
-    private static func segments(from words: [WordTiming]) -> [TranscriptSegment] {
+    static func segments(from words: [WordTiming]) -> [TranscriptSegment] {
         var out: [TranscriptSegment] = []
         var current: [WordTiming] = []
 

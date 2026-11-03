@@ -3,16 +3,16 @@ import ArgumentParser
 import Foundation
 
 @main
-struct Quill: ParsableCommand {
+struct Quill: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "quill",
         abstract: "Local meeting recorder + transcriber. Records mic and system audio as two tracks, then transcribes on-device.",
-        subcommands: [Run.self, Doctor.self, Install.self],
+        subcommands: [Run.self, Doctor.self, Install.self, Models.self, ImportMuesli.self, Summarize.self],
         defaultSubcommand: Run.self
     )
 }
 
-struct Run: ParsableCommand {
+struct Run: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "run",
         abstract: "Run the menu-bar daemon (default)."
@@ -21,10 +21,10 @@ struct Run: ParsableCommand {
     @Option(name: .long, help: "Recordings root directory (overrides the config file).")
     var out: String?
 
-    func run() throws {
-        // ArgumentParser invokes run() on the main thread; promote that fact
-        // to the type system so AppKit calls are cleanly isolated.
-        try MainActor.assumeIsolated { try runMain() }
+    func run() async throws {
+        // Async CLI subcommands may start on a cooperative executor. AppKit's
+        // application/run loop must still be created and driven on the main thread.
+        try await MainActor.run { try runMain() }
     }
 
     @MainActor
@@ -60,14 +60,28 @@ struct Run: ParsableCommand {
     }
 }
 
-struct Doctor: ParsableCommand {
+struct Doctor: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Check microphone, system audio, and recordings folder."
     )
 
-    func run() throws {
+    func run() async throws {
         let checks = DoctorReport.run(recordingsRoot: Config.resolveRoot(cliOverride: nil))
         DoctorReport.print(checks)
+        do {
+            if let settings = try Config.summarySettings() {
+                let client = OllamaClient(settings: settings)
+                let models = try await client.availableModels()
+                print("Ollama installed models: \(models.joined(separator: ", "))")
+                try await client.validateLocalModel()
+                print("✓ summaries: \(settings.model) at \(settings.baseURL)")
+            } else {
+                print("summaries: disabled (opt in with quill import-muesli)")
+            }
+        } catch {
+            print("✗ summaries: \(error)")
+            throw ExitCode(1)
+        }
         if !DoctorReport.allOK(checks) {
             throw ExitCode(1)
         }
@@ -91,13 +105,36 @@ final class AppController {
 
     private let root: URL
     private let menuBar = MenuBarController()
-    private let transcription = TranscriptionCoordinator()
+    private let transcription: TranscriptionCoordinator
     private let meetingAwareness = MeetingAwarenessCoordinator()
     private var session: RecordingSession?
     private var ticker: Timer?
 
     init(root: URL) {
         self.root = root
+        let summaries: SummaryCoordinator?
+        do {
+            summaries = try Config.summarySettings().map { SummaryCoordinator(settings: $0) }
+        } catch {
+            summaries = nil
+            FileHandle.standardError.write(Data("summaries disabled: \(error)\n".utf8))
+            notifyUser(title: "quill — summary configuration error", body: "Recording remains available. Run quill doctor.")
+        }
+        transcription = TranscriptionCoordinator(summaries: summaries)
+        if let summaries {
+            Task {
+                await summaries.setStatusHandler { status in
+                    switch status {
+                    case .idle: notifyUser(title: "quill — meeting notes ready", body: "summary.md is saved beside your transcript.")
+                    case .failed(let session):
+                        notifyUser(title: "quill — summary failed", body: "\(session): transcript saved; see summary.log or retry quill summarize.")
+                    case .summarizing: break
+                    }
+                }
+                do { try await summaries.resumePending(root: root) }
+                catch { FileHandle.standardError.write(Data("cannot resume summaries: \(error)\n".utf8)) }
+            }
+        }
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }

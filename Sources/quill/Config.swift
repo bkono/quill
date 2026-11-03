@@ -45,6 +45,17 @@ enum Config {
         transcription()?["engine"] as? String ?? "parakeet"
     }
 
+    static func speechModel() throws -> SpeechModel {
+        try SpeechModel.parse(transcription() ?? [:])
+    }
+
+    static func summarySettings() throws -> OllamaSettings? {
+        guard let settings = load()?["summaries"] as? [String: Any],
+              settings["enabled"] as? Bool == true else { return nil }
+        return try OllamaSettings(model: settings["model"] as? String ?? "",
+            baseURL: settings["url"] as? String ?? "http://localhost:11434")
+    }
+
     /// Whether Core Audio process activity should produce an actionable meeting
     /// prompt. Detection reads metadata only and never starts capture. Default on.
     static func meetingAwarenessEnabled() -> Bool {
