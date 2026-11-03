@@ -60,11 +60,38 @@ struct OllamaSummaryTests {
             #expect(body["model"] as? String == "qwen3:8b")
             #expect(body["stream"] as? Bool == false)
             #expect(body["think"] as? Bool == false)
+            #expect(body["truncate"] as? Bool == false)
+            #expect(body["shift"] as? Bool == false)
             let messages = try #require(body["messages"] as? [[String: String]])
             #expect(messages.last?["content"] == "me: ship Friday")
             return Self.answer("<think>internal</think>\nShip Friday.")
         }
         #expect(try await client.summarize("me: ship Friday") == "Ship Friday.")
+    }
+
+    @Test func respectsAdvertisedThinkingControlsAndLegacyCapabilities() async throws {
+        let cases: [([String: Any], Bool)] = [
+            (["details": ["format": "gguf", "family": "qwen3"],
+              "capabilities": ["thinking"],
+              "thinking": ["values": ["low", "medium", "high"], "default": "medium"]], false),
+            (["details": ["format": "gguf", "family": "qwen3"],
+              "capabilities": ["thinking"]], true),
+            (["details": ["format": "gguf", "family": "other"],
+              "capabilities": ["thinking"]], false),
+            (["details": ["format": "gguf", "family": "qwen3"]], false),
+        ]
+        for (metadata, disablesThinking) in cases {
+            let encoded = try JSONSerialization.data(withJSONObject: metadata)
+            StubProtocol.state.reset { request in
+                if request.url?.path == "/api/show" { return (200, encoded) }
+                let body = try Self.body(request)
+                if disablesThinking { #expect(body["think"] as? Bool == false) }
+                else { #expect(body["think"] == nil) }
+                return (200, try JSONSerialization.data(withJSONObject: Self.answer("Notes fixture.").1))
+            }
+            let client = OllamaClient(settings: try OllamaSettings(model: "fixture-model"), session: Self.session())
+            #expect(try await client.summarize("transcript fixture") == "Notes fixture.")
+        }
     }
 
     @Test func longMeetingIsChunkedThenSynthesized() async throws {
@@ -204,7 +231,9 @@ struct OllamaSummaryTests {
         #expect(!FileManager.default.fileExists(atPath: second.appendingPathComponent(SummaryCoordinator.pendingFilename).path))
     }
 
-    private static var localModel: (Int, [String: Any]) { (200, ["details": ["format": "gguf"]]) }
+    private static var localModel: (Int, [String: Any]) {
+        (200, ["details": ["format": "gguf"], "thinking": ["values": [false, true], "default": true]])
+    }
     private static func answer(_ content: String) -> (Int, [String: Any]) {
         (200, ["done": true, "message": ["content": content]])
     }
