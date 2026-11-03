@@ -14,6 +14,7 @@ struct SetupModelInfo: Identifiable, Sendable {
     let displayName: String
     let backendName: String
     let directory: URL
+    let resolvedDirectory: URL?
     let tokenizerDirectory: URL?
     let availabilityError: String?
     let cacheKind: ModelCacheKind
@@ -275,10 +276,14 @@ actor ModelSetupStore {
                 tokenizer = try WhisperEngine.tokenizerDirectory(model: model.model, modelFolder: directory, home: home)
             }
         } catch { availabilityError = String(describing: error) }
-        let fluid = home.appendingPathComponent("Library/Application Support/FluidAudio/Models").standardizedFileURL.path + "/"
-        let hf = home.appendingPathComponent("Documents/huggingface").standardizedFileURL.path + "/"
-        let cacheKind: ModelCacheKind = directory.standardizedFileURL.path.hasPrefix(fluid) ? .fluidAudio
-            : directory.standardizedFileURL.path.hasPrefix(hf) ? .huggingFace : .custom
+        let resolved = directory.resolvingSymlinksInPath().standardizedFileURL
+        let fluid = home.appendingPathComponent("Library/Application Support/FluidAudio/Models")
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        let hf = home.appendingPathComponent("Documents/huggingface")
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        func isWithin(_ root: String) -> Bool { resolved.path == root || resolved.path.hasPrefix(root + "/") }
+        let cacheKind: ModelCacheKind = isWithin(fluid) ? .fluidAudio
+            : isWithin(hf) ? .huggingFace : .custom
         let imported = provenance.flatMap { receipt -> URL? in
             guard receipt.speechEngine == model.engine, receipt.speechModel == model.model,
                   receipt.modelDirectory == directory.path else { return nil }
@@ -289,7 +294,8 @@ actor ModelSetupStore {
             : model.engine == "parakeet-unified" ? "Parakeet Unified" : "Parakeet \(model.model)"
         return SetupModelInfo(id: "\(model.engine):\(model.model):\(directory.path)",
             engine: model.engine, model: model.model, displayName: name, backendName: backend,
-            directory: directory, tokenizerDirectory: tokenizer, availabilityError: availabilityError,
+            directory: directory, resolvedDirectory: resolved.path == directory.standardizedFileURL.path ? nil : resolved,
+            tokenizerDirectory: tokenizer, availabilityError: availabilityError,
             cacheKind: cacheKind, importedConfigFrom: imported)
     }
 

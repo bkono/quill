@@ -261,6 +261,41 @@ import Testing
         #expect(await store.snapshot().onboarding?.outcome == .accepted)
     }
 
+    @Test func customAliasIntoSharedCacheRetainsItsSharedDependencyAndConfiguredPath() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let shared = fixture.model("v3")
+        try fixture.fill(shared)
+        let alias = fixture.home.appendingPathComponent("my-model")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: shared.directory!)
+        try fixture.writeConfig(["transcription": ["engine": "parakeet", "model": "v3", "model_directory": alias.path]])
+        let current = await fixture.store().snapshot()
+        #expect(current.selectedModel?.directory.path == alias.path)
+        #expect(current.selectedModel?.resolvedDirectory?.path == shared.directory!.resolvingSymlinksInPath().path)
+        #expect(current.selectedModel?.cacheKind == .fluidAudio)
+        #expect(current.selectedModel?.isAvailable == true)
+    }
+
+    @Test func sharedRootMovedBySymlinkStillClassifiesAsSharedStorage() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let sharedRoot = fixture.home.appendingPathComponent("Library/Application Support/FluidAudio/Models")
+        let external = fixture.home.appendingPathComponent("external-drive/models")
+        try FileManager.default.createDirectory(at: sharedRoot.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: sharedRoot, withDestinationURL: external)
+        let shared = fixture.model("v3")
+        try fixture.fill(shared)
+        // Saving the external path directly must not conceal its relationship
+        // to the shared cache root used by Muesli and FluidAudio.
+        let target = shared.directory!.resolvingSymlinksInPath()
+        try fixture.writeConfig(["transcription": ["engine": "parakeet", "model": "v3", "model_directory": target.path]])
+        let current = await fixture.store().snapshot()
+        #expect(current.selectedModel?.directory.path == target.path)
+        #expect(current.selectedModel?.cacheKind == .fluidAudio)
+        #expect(current.selectedModel?.isAvailable == true)
+    }
+
     @Test func settingsWritePreservesSymlinkAndBacksUpExactTargetBytes() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
