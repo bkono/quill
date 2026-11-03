@@ -156,6 +156,54 @@ struct OllamaSummaryTests {
         #expect(StubProtocol.state.requests.count == requestCount)
     }
 
+    @Test func intentBeforeTranscriptCommitRecoversInterruptedHandoff() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = root.appendingPathComponent("meeting")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let client = try client { request in request.url?.path == "/api/show" ? Self.localModel : Self.answer("Recovered.") }
+        let beforeCrash = SummaryCoordinator(settings: client.settings, client: client)
+        try await beforeCrash.recordIntent(dir)
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(SummaryCoordinator.pendingFilename).path))
+
+        // A crash before the transcript commit must not attempt an empty summary.
+        let restarted = SummaryCoordinator(settings: client.settings, client: client)
+        try await restarted.resumePending(root: root)
+        await restarted.waitUntilIdle()
+        #expect(StubProtocol.state.requests.isEmpty)
+
+        // A crash after the commit but before enqueue must still recover the job.
+        let fixture = try Self.writeTranscript(to: dir, text: "committed before interruption")
+        try await restarted.resumePending(root: root)
+        await restarted.waitUntilIdle()
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("summary.md").path))
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent(SummaryCoordinator.pendingFilename).path))
+        #expect(try Data(contentsOf: dir.appendingPathComponent("transcript.json")) == fixture)
+    }
+
+    @Test func oneUnwritablePendingDirectoryDoesNotBlockRecoveryOfLaterJobs() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let first = root.appendingPathComponent("a-readonly"), second = root.appendingPathComponent("b-ready")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: first.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        _ = try Self.writeTranscript(to: first, text: "readonly fixture")
+        _ = try Self.writeTranscript(to: second, text: "ready fixture")
+        for dir in [first, second] {
+            try Data().write(to: dir.appendingPathComponent(SummaryCoordinator.pendingFilename))
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: first.path)
+        let client = try client { request in request.url?.path == "/api/show" ? Self.localModel : Self.answer("Recovered.") }
+        let queue = SummaryCoordinator(settings: client.settings, client: client)
+        try await queue.resumePending(root: root)
+        await queue.waitUntilIdle()
+        #expect(FileManager.default.fileExists(atPath: first.appendingPathComponent(SummaryCoordinator.pendingFilename).path))
+        #expect(!FileManager.default.fileExists(atPath: first.appendingPathComponent("summary.md").path))
+        #expect(FileManager.default.fileExists(atPath: second.appendingPathComponent("summary.md").path))
+        #expect(!FileManager.default.fileExists(atPath: second.appendingPathComponent(SummaryCoordinator.pendingFilename).path))
+    }
+
     private static var localModel: (Int, [String: Any]) { (200, ["details": ["format": "gguf"]]) }
     private static func answer(_ content: String) -> (Int, [String: Any]) {
         (200, ["done": true, "message": ["content": content]])

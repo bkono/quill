@@ -25,12 +25,18 @@ actor SummaryCoordinator {
         statusHandler = handler
     }
 
+    /// Persist the handoff before transcript.json becomes the transcription queue's
+    /// completion marker. On restart, an intent without a transcript waits for ASR.
+    func recordIntent(_ dir: URL) throws {
+        try Data().write(to: dir.appendingPathComponent(Self.pendingFilename), options: .atomic)
+    }
+
     func enqueue(_ dir: URL) throws {
         guard !FileManager.default.fileExists(atPath: dir.appendingPathComponent("summary.md").path) else {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent(Self.pendingFilename))
             return
         }
-        try Data().write(to: dir.appendingPathComponent(Self.pendingFilename), options: .atomic)
+        try recordIntent(dir)
         guard active != dir, !queue.contains(dir) else { return }
         queue.append(dir)
         startIfIdle()
@@ -39,8 +45,15 @@ actor SummaryCoordinator {
     func resumePending(root: URL) throws {
         let directories = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         for dir in directories.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            if FileManager.default.fileExists(atPath: dir.appendingPathComponent(Self.pendingFilename).path) {
-                try enqueue(dir)
+            let fm = FileManager.default
+            if fm.fileExists(atPath: dir.appendingPathComponent(Self.pendingFilename).path),
+               fm.fileExists(atPath: dir.appendingPathComponent("transcript.json").path) {
+                do {
+                    try enqueue(dir)
+                } catch {
+                    log(dir, "summary could not be resumed: \(error)")
+                    statusHandler?(.failed(session: dir.lastPathComponent))
+                }
             }
         }
     }
