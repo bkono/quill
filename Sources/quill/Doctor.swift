@@ -86,14 +86,28 @@ enum DoctorReport {
                 remediation: nil
             )
         }
-        let cache = AsrModels.defaultCacheDirectory(for: .v2)
-        if AsrModels.modelsExist(at: cache, version: .v2) {
-            return Check(name: "transcription", status: .ok, remediation: nil)
+        do {
+            let selection = try Config.speechModel()
+            if let directory = selection.directory {
+                try selection.validateCache()
+                if selection.engine == "whisperkit" {
+                    _ = try WhisperEngine.tokenizerDirectory(model: selection.model, modelFolder: directory)
+                }
+                return Check(name: "transcription (\(selection.engine)/\(selection.model), \(directory.path)",
+                    status: .ok, remediation: "cache files present; record a short test to verify runtime loading")
+            }
+            let cache = AsrModels.defaultCacheDirectory(for: selection.parakeetVersion)
+            if AsrModels.modelsExist(at: cache, version: selection.parakeetVersion) {
+                return Check(name: "transcription (\(selection.engine)/\(selection.model))", status: .ok, remediation: nil)
+            }
+        } catch {
+            return Check(name: "transcription", status: .warn("\(error)"),
+                remediation: "open Models & Notes to choose a cached model or check Muesli again; recording remains available")
         }
         return Check(
             name: "transcription",
-            status: .warn("parakeet models not downloaded (~600 MB)"),
-            remediation: "downloads automatically on first transcription — record a short test session while online"
+            status: .warn("selected Parakeet model is not available locally"),
+            remediation: "open Models & Notes to reuse a cached model; Quill never downloads models automatically"
         )
     }
 

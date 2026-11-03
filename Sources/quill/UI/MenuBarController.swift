@@ -4,17 +4,21 @@ import AppKit
 /// a glance and provides the only persistent control surface for the daemon
 /// (since we run as `.accessory` — no dock icon, no main window).
 @MainActor
-final class MenuBarController {
+final class MenuBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let stateLabel: NSMenuItem
     private let transcriptionLabel: NSMenuItem
     private let toggleItem: NSMenuItem
+    private let modelLabel: NSMenuItem
+    private let notesLabel: NSMenuItem
 
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
     var onQuit: (() -> Void)?
+    var onModels: (() -> Void)?
+    var onWillOpen: (() -> Void)?
 
-    init() {
+    override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         let menu = NSMenu()
@@ -28,6 +32,13 @@ final class MenuBarController {
         transcriptionLabel.isEnabled = false
         transcriptionLabel.isHidden = true
         menu.addItem(transcriptionLabel)
+
+        modelLabel = NSMenuItem(title: "Checking transcription model…", action: nil, keyEquivalent: "")
+        modelLabel.isEnabled = false
+        menu.addItem(modelLabel)
+        notesLabel = NSMenuItem(title: "Meeting notes: off", action: nil, keyEquivalent: "")
+        notesLabel.isEnabled = false
+        menu.addItem(notesLabel)
 
         menu.addItem(.separator())
 
@@ -45,6 +56,9 @@ final class MenuBarController {
         )
         menu.addItem(openFolder)
 
+        let models = NSMenuItem(title: "Models & Notes…", action: #selector(modelsClicked), keyEquivalent: ",")
+        menu.addItem(models)
+
         menu.addItem(.separator())
 
         let quit = NSMenuItem(
@@ -54,11 +68,13 @@ final class MenuBarController {
         )
         menu.addItem(quit)
 
-        for item in [toggleItem, openFolder, quit] {
+        super.init()
+        for item in [toggleItem, openFolder, models, quit] {
             item.target = self
         }
 
         statusItem.menu = menu
+        menu.delegate = self
 
         if let button = statusItem.button {
             let image = Self.featherImage()
@@ -86,6 +102,17 @@ final class MenuBarController {
         transcriptionLabel.isHidden = text == nil
     }
 
+    func updateModels(_ snapshot: ModelSetupSnapshot) {
+        if let model = snapshot.selectedModel {
+            modelLabel.title = "Transcription: \(model.displayName) · \(model.backendName)"
+                + (!snapshot.transcriptionEnabled ? " (off)" : model.isAvailable ? "" : " — files unavailable")
+        } else { modelLabel.title = "Transcription: configuration needs attention" }
+        notesLabel.title = snapshot.summaries?.enabled == true
+            ? "Meeting notes: \(snapshot.summaries!.model) · Ollama" : "Meeting notes: off"
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { onWillOpen?() }
+
     // Inlined Lucide feather SVG. Keeping it in source means the executable
     // has no separate resource bundle to install alongside it — true
     // single-binary.
@@ -111,4 +138,5 @@ final class MenuBarController {
     @objc private func toggleClicked() { onToggle?() }
     @objc private func openFolderClicked() { onOpenFolder?() }
     @objc private func quitClicked() { onQuit?() }
+    @objc private func modelsClicked() { onModels?() }
 }

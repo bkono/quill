@@ -3,7 +3,7 @@
 A minimal, fully local macOS meeting recorder + transcriber. One menu-bar
 click records your mic and all system audio as two separate tracks; when you
 stop, quill transcribes both on-device and writes a speaker-tagged transcript.
-Nothing ever leaves the machine.
+Transcription stays on-device; optional meeting notes use a local Ollama model.
 
 Named for the feather. Sibling of [parrot](https://github.com/digimata/parrot), same skeleton: single
 Swift binary, menu-bar tray, no app bundle.
@@ -50,6 +50,8 @@ Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 | `transcript.json` | canonical transcript — engine provenance + timed, speaker-tagged segments |
 | `transcript.md` | the same transcript rendered for reading |
 | `transcribe.log` | transcription progress/errors for this session |
+| `summary.md` | optional Ollama meeting notes, decisions, and action items |
+| `summary.log` | summary progress/errors (transcripts remain available on failure) |
 
 Two tracks on purpose: speech models do better on clean single-source audio,
 and mic-vs-system is free two-party diarization — `me` vs `them` with no
@@ -61,10 +63,8 @@ written is still readable.
 
 Built in, on-device, automatic. The default engine is **Parakeet TDT 0.6B v2**
 (English) via [FluidAudio](https://github.com/FluidInference/FluidAudio)'s
-Core ML port — roughly 20 seconds per hour of audio on Apple Silicon. Models
-(~600 MB) download once on first transcription; `quill doctor` tells you
-whether they're already cached so you're never downloading after an important
-meeting.
+Core ML port — roughly 20 seconds per hour of audio on Apple Silicon. Models load from existing local caches. Quill never starts a model download
+automatically; the menu bar shows the saved model and missing-file status.
 
 Each track is transcribed separately, shifted by its start offset so both
 share one clock, and merged by timestamp. Jobs run in a serial queue — you can
@@ -73,8 +73,22 @@ on next launch (the filesystem is the queue: a session with `meta.json` but no
 `transcript.json` is pending). Failures append to the session's
 `transcribe.log` and never block later jobs.
 
-The engine sits behind a small protocol; a Whisper engine (WhisperKit
-large-v3-turbo) is planned as the fallback / re-transcription option.
+Already using Muesli? On first launch, Quill discovers its setup and offers to
+reuse your selected meeting model and local Ollama settings. Accept in the window
+to get started. Your choice is remembered; ordinary launches do not ask again.
+
+Open **Models & Notes…** from the menu bar to choose a cached model, inspect
+model/tokenizer paths, configure notes, recover missing assets, or check Muesli
+again. It shows Quill’s own configuration separately from shared caches and any
+job currently using a different model. The CLI import remains available for
+explicit re-import and diagnostics.
+Quill supports existing Parakeet v2/v3, Redux, Unified, and WhisperKit caches
+without moving or downloading them. See [the migration guide](docs/muesli-migration.md)
+for compatibility, existing-config handling, and work-laptop setup.
+
+Optional Ollama summaries run in a separate queue after the transcript is saved.
+They never delay recording or transcription. Failures can be retried with
+`quill summarize <session-directory>`; existing notes require `--overwrite`.
 
 ## Config
 
@@ -112,6 +126,10 @@ Optional, at `~/.config/quill/config.json`:
 quill                        # run the menu-bar daemon (^C to quit)
 quill run --out <dir>        # custom recordings root (default ~/Recordings)
 quill doctor                 # check permissions, recordings folder, models
+quill models                 # inspect compatible existing speech model caches
+quill import-muesli           # preview Muesli meeting model + Ollama import
+quill import-muesli --write   # apply (use --replace for existing selections)
+quill summarize <session>    # generate/retry meeting notes from transcript.json
 quill install --launch-at-login
 quill install --uninstall
 ```
@@ -133,7 +151,7 @@ quill install --uninstall
   per-process picker if it bothers you).
 - If recordings come out silent, check System Settings → Privacy & Security →
   Screen & System Audio Recording.
-- Parakeet v2 is English-only. Other languages will come with the Whisper
-  engine.
+- Parakeet v2 and Unified are English-only. Existing Parakeet v3/Redux and
+  multilingual WhisperKit caches can be selected for other languages.
 - The binary embeds its Info.plist (`__TEXT,__info_plist`) so TCC can
   attribute permissions to quill itself when running as a LaunchAgent.

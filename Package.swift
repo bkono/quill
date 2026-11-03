@@ -6,7 +6,9 @@ let package = Package(
     platforms: [.macOS(.v15)],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.7.0"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.17.3"),
+        // Match Muesli's tokenizer/model loader without following a moving branch.
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", revision: "80d96762fa727f816ffceab76a6529cd12c2726f"),
     ],
     targets: [
         .executableTarget(
@@ -14,6 +16,7 @@ let package = Package(
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "WhisperKit", package: "WhisperKit"),
             ],
             exclude: ["Info.plist"],
             linkerSettings: [

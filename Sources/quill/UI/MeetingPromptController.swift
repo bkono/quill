@@ -233,7 +233,10 @@ final class MeetingPromptController: NSObject {
     /// accent.
     private static func eyebrowTextColor(accent: NSColor) -> NSColor {
         NSColor(name: nil) { appearance in
-            let resolved = accent.resolvedColor(with: appearance)
+            var resolved = accent
+            appearance.performAsCurrentDrawingAppearance {
+                resolved = accent.usingColorSpace(.deviceRGB) ?? accent
+            }
             let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             if isDark {
                 return resolved
