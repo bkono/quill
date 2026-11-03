@@ -125,23 +125,34 @@ actor WhisperEngine: TranscriptionEngine {
 /// WhisperKit's public tokenizer factory accepts a local directory, but its
 /// WhisperTokenizerWrapper initializer is internal. This bridge keeps tokenizer
 /// failures local rather than invoking the library's network fallback.
-private struct LocalWhisperTokenizer: WhisperTokenizer {
+struct LocalWhisperTokenizer: WhisperTokenizer {
     let underlying: TokenizerWrapper
     let specialTokens: SpecialTokens
     let allLanguageTokens: Set<Int>
 
     init(_ underlying: TokenizerWrapper) throws {
         self.underlying = underlying
+        specialTokens = try Self.makeSpecialTokens(lookup: underlying.convertTokenToId)
+        allLanguageTokens = Set(Constants.languages.values.compactMap {
+            underlying.convertTokenToId("<|\($0)|>")
+        })
+    }
+
+    static func makeSpecialTokens(lookup: (String) -> Int?) throws -> SpecialTokens {
         func id(_ token: String) throws -> Int {
-            guard let value = underlying.convertTokenToId(token) else {
+            guard let value = lookup(token) else {
                 throw WhisperEngine.EngineError.invalidTokenizer(token)
             }
             return value
         }
-        specialTokens = try SpecialTokens(
+        // Pre-v3 OpenAI tokenizers call this token nocaptions. Its numeric ID
+        // also differs for English-only vocabularies; do not use a base-model
+        // fallback ID for a missing spelling.
+        let noSpeech = try lookup("<|nospeech|>") ?? id("<|nocaptions|>")
+        return try SpecialTokens(
             endToken: id("<|endoftext|>"),
             englishToken: id("<|en|>"),
-            noSpeechToken: id("<|nospeech|>"),
+            noSpeechToken: noSpeech,
             noTimestampsToken: id("<|notimestamps|>"),
             specialTokenBegin: id("<|endoftext|>"),
             startOfPreviousToken: id("<|startofprev|>"),
@@ -151,9 +162,6 @@ private struct LocalWhisperTokenizer: WhisperTokenizer {
             translateToken: id("<|translate|>"),
             whitespaceToken: id("Ġ")
         )
-        allLanguageTokens = Set(Constants.languages.values.compactMap {
-            underlying.convertTokenToId("<|\($0)|>")
-        })
     }
 
     func encode(text: String) -> [Int] { underlying.encode(text: text) }

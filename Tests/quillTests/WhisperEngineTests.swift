@@ -61,4 +61,37 @@ struct WhisperEngineTests {
         // A failed preparation never leaves a usable, partially loaded engine.
         await #expect(throws: WhisperEngine.EngineError.self) { try await engine.transcribe(home.appendingPathComponent("unread.caf")) }
     }
+
+    @Test func preservesSpecialTokenIDsAcrossWhisperVocabularies() throws {
+        // OpenAI Whisper tokenizer.json protocol IDs: English vocab is shifted
+        // by one; v3 inserts another language before the task/no-speech tokens.
+        for (english, v3) in [(false, false), (true, false), (false, true)] {
+            let shift = english ? -1 : 0
+            let v3Shift = v3 ? 1 : 0
+            let noSpeechKey = v3 ? "<|nospeech|>" : "<|nocaptions|>"
+            let vocab = [
+                "<|endoftext|>": 50257 + shift,
+                "<|en|>": 50259 + shift,
+                "<|startoftranscript|>": 50258 + shift,
+                "<|translate|>": 50358 + shift + v3Shift,
+                "<|transcribe|>": 50359 + shift + v3Shift,
+                "<|startofprev|>": 50361 + shift + v3Shift,
+                noSpeechKey: 50362 + shift + v3Shift,
+                "<|notimestamps|>": 50363 + shift + v3Shift,
+                "<|0.00|>": 50364 + shift + v3Shift,
+                "Ġ": 220,
+            ]
+            let tokens = try LocalWhisperTokenizer.makeSpecialTokens { vocab[$0] }
+            #expect(tokens.noSpeechToken == vocab[noSpeechKey])
+            #expect(tokens.endToken == vocab["<|endoftext|>"])
+            #expect(tokens.timeTokenBegin == vocab["<|0.00|>"])
+            #expect(tokens.whitespaceToken == 220)
+            var incomplete = vocab
+            incomplete.removeValue(forKey: noSpeechKey)
+            #expect(throws: WhisperEngine.EngineError.self) {
+                try LocalWhisperTokenizer.makeSpecialTokens { incomplete[$0] }
+            }
+        }
+    }
+
 }
