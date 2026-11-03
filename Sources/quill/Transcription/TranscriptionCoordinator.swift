@@ -10,19 +10,50 @@ import Foundation
 actor TranscriptionCoordinator {
     enum Status: Sendable {
         case idle
-        case transcribing(session: String, queued: Int)
+        case transcribing(session: String, model: String, queued: Int)
         case failed(session: String)
     }
 
     private var queue: [URL] = []
     private var draining = false
     private var engine: TranscriptionEngine?
+    private var engineSelection: SpeechModel?
+    private var activeSession: URL?
+    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
     private var lastFailure: String?
     private var statusHandler: (@Sendable (Status) -> Void)?
-    private let summaries: SummaryCoordinator?
+    private var summaries: SummaryCoordinator?
+    private let modelProvider: @Sendable () throws -> SpeechModel
+    private let engineFactory: @Sendable (SpeechModel) throws -> any TranscriptionEngine
+    private let enabled: @Sendable () -> Bool
+    private let hookCommand: @Sendable () -> String?
+    private let notify: @Sendable (String, String) -> Void
 
-    init(summaries: SummaryCoordinator? = nil) {
+    init(
+        summaries: SummaryCoordinator? = nil,
+        modelProvider: @escaping @Sendable () throws -> SpeechModel = { try Config.speechModel() },
+        engineFactory: @escaping @Sendable (SpeechModel) throws -> any TranscriptionEngine = { try TranscriptionCoordinator.makeEngine($0) },
+        enabled: @escaping @Sendable () -> Bool = { Config.transcriptionEnabled() },
+        hookCommand: @escaping @Sendable () -> String? = { Config.onStop() },
+        notify: @escaping @Sendable (String, String) -> Void = { notifyUser(title: $0, body: $1) }
+    ) {
         self.summaries = summaries
+        self.modelProvider = modelProvider
+        self.engineFactory = engineFactory
+        self.enabled = enabled
+        self.hookCommand = hookCommand
+        self.notify = notify
+    }
+
+    /// A settings change affects jobs that have not started. An active job
+    /// retains its original coordinator through durable intent and handoff.
+    func updateSummaries(_ summaries: SummaryCoordinator?) {
+        self.summaries = summaries
+    }
+
+    func waitUntilIdle() async {
+        guard draining || !queue.isEmpty else { return }
+        await withCheckedContinuation { idleWaiters.append($0) }
     }
 
     func setStatusHandler(_ handler: @escaping @Sendable (Status) -> Void) {
@@ -32,10 +63,11 @@ actor TranscriptionCoordinator {
     /// Queue a finished session. With transcription disabled in config, the
     /// on_stop hook still fires — it just gets an untranscribed folder.
     func enqueue(_ sessionDir: URL) {
-        guard Config.transcriptionEnabled() else {
+        guard enabled() else {
             runHook(for: sessionDir)
             return
         }
+        guard !isScheduled(sessionDir) else { return }
         queue.append(sessionDir)
         drainIfIdle()
     }
@@ -44,7 +76,7 @@ actor TranscriptionCoordinator {
     /// but were never transcribed. Folder names sort chronologically, so
     /// oldest-first is a name sort.
     func resumePending(root: URL) {
-        guard Config.transcriptionEnabled() else { return }
+        guard enabled() else { return }
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: nil
         ) else { return }
@@ -56,7 +88,7 @@ actor TranscriptionCoordinator {
                     && !fm.fileExists(atPath: $0.appendingPathComponent("transcript.json").path)
             }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for dir in pending where !queue.contains(dir) {
+        for dir in pending where !isScheduled(dir) {
             queue.append(dir)
         }
         if !pending.isEmpty {
@@ -65,6 +97,12 @@ actor TranscriptionCoordinator {
             ))
         }
         drainIfIdle()
+    }
+
+    private func isScheduled(_ dir: URL) -> Bool {
+        let path = dir.standardizedFileURL.path
+        return activeSession?.standardizedFileURL.path == path
+            || queue.contains { $0.standardizedFileURL.path == path }
     }
 
     // MARK: -
@@ -79,39 +117,48 @@ actor TranscriptionCoordinator {
     private func drain() async {
         while !queue.isEmpty {
             let dir = queue.removeFirst()
-            publish(.transcribing(session: dir.lastPathComponent, queued: queue.count))
+            activeSession = dir
+            let jobSummaries = summaries
             do {
-                try await transcribe(dir)
-                notifyUser(title: "quill — transcript ready", body: dir.lastPathComponent)
+                let configured = try modelProvider()
+                let selection = configured.engine == "parakeet" ? ParakeetEngine.localSelection(configured) : configured
+                publish(.transcribing(session: dir.lastPathComponent,
+                    model: "\(selection.engine)/\(selection.model)", queued: queue.count))
+                try await transcribe(dir, selection: selection, summaries: jobSummaries)
+                notify("quill — transcript ready", dir.lastPathComponent)
                 runHook(for: dir)
-                if let summaries {
+                if let summaries = jobSummaries {
                     do { try await summaries.enqueue(dir) }
                     catch {
                         log(dir, "transcript ready, but summary could not be queued: \(error)")
-                        notifyUser(title: "quill — summary failed", body: "Transcript saved. Retry with quill summarize.")
+                        notify("quill — summary failed", "Transcript saved. Retry with quill summarize.")
                     }
                 }
             } catch {
                 log(dir, "transcription failed: \(error)")
                 lastFailure = dir.lastPathComponent
-                notifyUser(
-                    title: "quill — transcription failed",
-                    body: "\(dir.lastPathComponent) — see transcribe.log"
-                )
+                notify("quill — transcription failed", "\(dir.lastPathComponent) — see transcribe.log")
             }
+            activeSession = nil
         }
         await engine?.release()
         engine = nil
-        publish(lastFailure.map { .failed(session: $0) } ?? .idle)
+        engineSelection = nil
         draining = false
-        // An enqueue that landed between the loop exiting and the release
-        // finishing would otherwise sit until the next enqueue.
-        drainIfIdle()
+        // An enqueue during release belongs to the next drain, not an idle
+        // completion. Explicit retry also never duplicates an active session.
+        if !queue.isEmpty { drainIfIdle() }
+        else {
+            publish(lastFailure.map { .failed(session: $0) } ?? .idle)
+            let waiters = idleWaiters
+            idleWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
     }
 
-    private func transcribe(_ dir: URL) async throws {
+    private func transcribe(_ dir: URL, selection: SpeechModel, summaries: SummaryCoordinator?) async throws {
         let meta = try SessionMeta.read(from: dir)
-        let engine = try await preparedEngine()
+        let engine = try await preparedEngine(selection: selection)
 
         var merged: [Transcript.Segment] = []
         for track in meta.tracks {
@@ -159,29 +206,43 @@ actor TranscriptionCoordinator {
         log(dir, "done — \(merged.count) segments")
     }
 
-    private func preparedEngine() async throws -> TranscriptionEngine {
-        if let engine { return engine }
-        let selection = try Config.speechModel()
-        try selection.validateCache()
-        let engine: TranscriptionEngine
+    private func preparedEngine(selection: SpeechModel) async throws -> TranscriptionEngine {
+        if let engine, let previous = engineSelection,
+           previous.engine == selection.engine, previous.model == selection.model,
+           previous.directory?.standardizedFileURL.path == selection.directory?.standardizedFileURL.path {
+            return engine
+        }
+        await engine?.release()
+        engine = nil
+        engineSelection = nil
+        let candidate = try engineFactory(selection)
+        do { try await candidate.prepare() }
+        catch { await candidate.release(); throw error }
+        engine = candidate
+        engineSelection = selection
+        return candidate
+    }
+
+    private nonisolated static func makeEngine(_ selection: SpeechModel) throws -> any TranscriptionEngine {
+        do { try selection.validateCache() }
+        catch { throw SetupError("\(error) Open Models & Notes to choose a cached model or restore its existing assets.") }
         switch selection.engine {
         case "whisperkit":
-            engine = WhisperEngine(model: selection.model, modelFolder: selection.directory!)
+            guard let directory = selection.directory else { throw SetupError("Choose a cached model in Models & Notes.") }
+            return WhisperEngine(model: selection.model, modelFolder: directory)
         case "parakeet-unified":
-            engine = UnifiedEngine(model: "parakeet-unified-en-0.6b-coreml", modelFolder: selection.directory!)
+            guard let directory = selection.directory else { throw SetupError("Choose a cached model in Models & Notes.") }
+            return UnifiedEngine(model: "parakeet-unified-en-0.6b-coreml", modelFolder: directory)
         default:
-            engine = ParakeetEngine(selection: selection)
+            return ParakeetEngine(selection: selection)
         }
-        try await engine.prepare()
-        self.engine = engine
-        return engine
     }
 
     /// Fires the configured on_stop shell command with the session directory
     /// as its sole argument, after the transcript exists (or immediately after
     /// recording when transcription is disabled).
     private func runHook(for dir: URL) {
-        guard let cmd = Config.onStop() else { return }
+        guard let cmd = hookCommand() else { return }
         let task = Process()
         task.launchPath = "/bin/sh"
         task.arguments = ["-c", "\(cmd) \"$0\"", dir.path]

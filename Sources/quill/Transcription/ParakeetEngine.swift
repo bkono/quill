@@ -3,10 +3,8 @@ import CoreML
 import FluidAudio
 import Foundation
 
-/// Parakeet TDT 0.6B v2 (English) via FluidAudio's Core ML port. Models
-/// download once into FluidAudio's managed cache (~600 MB); after that,
-/// transcription runs entirely on-device at roughly 20 seconds per hour of
-/// audio on Apple Silicon.
+/// Parakeet via FluidAudio's Core ML port. Existing local assets are loaded
+/// in place; missing caches never trigger a background model download.
 actor ParakeetEngine: TranscriptionEngine {
     enum EngineError: Error, CustomStringConvertible {
         case notPrepared
@@ -27,26 +25,34 @@ actor ParakeetEngine: TranscriptionEngine {
     private let selection: SpeechModel
 
     init(selection: SpeechModel) {
-        self.selection = selection
+        self.selection = Self.localSelection(selection)
         self.model = selection.model == "redux" ? "parakeet-redux-coreml"
             : "parakeet-tdt-0.6b-\(selection.model)-coreml"
+    }
+
+    /// Older configs omit the directory. Resolve their existing shared cache,
+    /// preserving the selection while changing absence into an actionable error.
+    nonisolated static func localSelection(_ selection: SpeechModel) -> SpeechModel {
+        guard selection.directory == nil else { return selection }
+        return SpeechModel(engine: selection.engine, model: selection.model,
+            directory: AsrModels.defaultCacheDirectory(for: selection.parakeetVersion))
     }
 
     private var manager: AsrManager?
 
     func prepare() async throws {
         guard manager == nil else { return }
-        let models: AsrModels
-        if let folder = selection.directory {
-            try selection.validateCache()
-            models = try AsrModels.loadLocal(
-                from: folder, version: selection.parakeetVersion,
-                encoderComputeUnits: selection.model == "redux" ? .cpuOnly : nil
-            )
-        } else {
-            // Preserve the original first-run download only for unconfigured users.
-            models = try await AsrModels.downloadAndLoad(version: selection.parakeetVersion)
+        do { try selection.validateCache() }
+        catch {
+            throw SetupError("\(error) Open Models & Notes to choose a cached model or restore its existing assets.")
         }
+        guard let folder = selection.directory else {
+            throw SetupError("Choose a cached transcription model in Models & Notes.")
+        }
+        let models = try AsrModels.loadLocal(
+            from: folder, version: selection.parakeetVersion,
+            encoderComputeUnits: selection.model == "redux" ? .cpuOnly : nil
+        )
         let manager = AsrManager()
         try await manager.loadModels(models)
         self.manager = manager
