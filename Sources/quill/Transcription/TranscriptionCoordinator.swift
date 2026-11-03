@@ -19,6 +19,11 @@ actor TranscriptionCoordinator {
     private var engine: TranscriptionEngine?
     private var lastFailure: String?
     private var statusHandler: (@Sendable (Status) -> Void)?
+    private let summaries: SummaryCoordinator?
+
+    init(summaries: SummaryCoordinator? = nil) {
+        self.summaries = summaries
+    }
 
     func setStatusHandler(_ handler: @escaping @Sendable (Status) -> Void) {
         statusHandler = handler
@@ -79,6 +84,13 @@ actor TranscriptionCoordinator {
                 try await transcribe(dir)
                 notifyUser(title: "quill — transcript ready", body: dir.lastPathComponent)
                 runHook(for: dir)
+                if let summaries {
+                    do { try await summaries.enqueue(dir) }
+                    catch {
+                        log(dir, "transcript ready, but summary could not be queued: \(error)")
+                        notifyUser(title: "quill — summary failed", body: "Transcript saved. Retry with quill summarize.")
+                    }
+                }
             } catch {
                 log(dir, "transcription failed: \(error)")
                 lastFailure = dir.lastPathComponent
@@ -136,19 +148,30 @@ actor TranscriptionCoordinator {
             created_at: ISO8601DateFormatter().string(from: Date()),
             segments: merged
         )
+        // Persist intent first: after transcript.json exists the ASR recovery
+        // scan excludes this session, so a later summary marker would leave a
+        // crash window in which neither queue could recover the handoff.
+        if let summaries {
+            do { try await summaries.recordIntent(dir) }
+            catch { log(dir, "could not persist summary intent: \(error)") }
+        }
         try transcript.write(to: dir)
         log(dir, "done — \(merged.count) segments")
     }
 
     private func preparedEngine() async throws -> TranscriptionEngine {
         if let engine { return engine }
-        let configured = Config.transcriptionEngine()
-        if configured != "parakeet" {
-            FileHandle.standardError.write(Data(
-                "warning: unknown transcription engine \"\(configured)\" — using parakeet\n".utf8
-            ))
+        let selection = try Config.speechModel()
+        try selection.validateCache()
+        let engine: TranscriptionEngine
+        switch selection.engine {
+        case "whisperkit":
+            engine = WhisperEngine(model: selection.model, modelFolder: selection.directory!)
+        case "parakeet-unified":
+            engine = UnifiedEngine(model: "parakeet-unified-en-0.6b-coreml", modelFolder: selection.directory!)
+        default:
+            engine = ParakeetEngine(selection: selection)
         }
-        let engine = ParakeetEngine()
         try await engine.prepare()
         self.engine = engine
         return engine
