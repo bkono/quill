@@ -41,11 +41,15 @@ enum MuesliImport {
 
     static func write(_ config: [String: Any], to path: URL, expectedOriginal: Data?) throws -> URL? {
         let fm = FileManager.default
-        let current = fm.fileExists(atPath: path.path) ? try Data(contentsOf: path) : nil
+        // Atomic replacement at the logical path would replace a settings
+        // symlink. Write its resolved target and retain the user's linkage.
+        let destination = path.resolvingSymlinksInPath()
+        let current = fm.fileExists(atPath: destination.path) ? try Data(contentsOf: destination) : nil
         guard current == expectedOriginal else {
             throw SetupError("Quill config changed during import; rerun to review the current settings.")
         }
         try fm.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         var backup: URL?
         if let current {
             let url = path.appendingPathExtension("backup-" + UUID().uuidString)
@@ -54,8 +58,8 @@ enum MuesliImport {
             backup = url
         }
         let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
-        try data.write(to: path, options: .atomic)
-        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        try data.write(to: destination, options: .atomic)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
         return backup
     }
 }
@@ -88,7 +92,11 @@ struct ImportMuesli: ParsableCommand {
         let data = try JSONSerialization.data(withJSONObject: preview, options: [.prettyPrinted, .sortedKeys])
         print(String(decoding: data, as: UTF8.self))
         if write {
-            let backup = try MuesliImport.write(result, to: Config.path, expectedOriginal: original)
+            let recorded = try ModelSetupStore.addingProvenance(to: result, source: source,
+                importedSummaries: muesli["meeting_summary_backend"] as? String == "ollama")
+            let backup = try MuesliImport.write(recorded, to: Config.path, expectedOriginal: original)
+            do { try ModelSetupStore.recordCLIImport(source: source, at: Config.path) }
+            catch { throw SetupError("Quill configuration was saved at \(Config.path.path), but setup state could not be saved: \(error).") }
             print("Updated \(Config.path.path)")
             if let backup { print("Backup: \(backup.path)") }
             print("Restart Quill, then run quill doctor to check Ollama and the selected cache.")

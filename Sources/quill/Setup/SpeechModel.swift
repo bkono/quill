@@ -6,8 +6,8 @@ struct SetupError: Error, CustomStringConvertible {
     init(_ message: String) { description = message }
 }
 
-/// Explicit runtime + version + cache. Existing configs retain Parakeet v2's
-/// first-run download; a selected directory is always loaded strictly locally.
+/// Explicit runtime + version + cache. Older configs retain Parakeet v2's
+/// shared cache selection. Missing assets fail locally without downloading.
 struct SpeechModel: Sendable {
     let engine: String
     let model: String
